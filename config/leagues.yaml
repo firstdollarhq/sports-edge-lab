@@ -1,0 +1,34 @@
+# Which sports/leagues are active. NHL and NBA seasons haven't started yet
+# (~a month out as of 2026-09-10) so they're present but disabled.
+
+leagues:
+  nfl:
+    enabled: true
+    sport: nfl
+    league_code: NFL
+    stats_source: nflverse            # free, no key
+    odds_source: kalshi                # free, no key (KXNFLGAME series)
+    kalshi_series: KXNFLGAME
+
+  epl:
+    enabled: true
+    sport: soccer
+    league_code: E0
+    stats_source: football-data.co.uk  # free, no key (historical)
+    odds_source: kalshi                 # free, no key (KXEPLGAME series)
+    kalshi_series: KXEPLGAME
+
+  nba:
+    enabled: false
+    sport: basketball
+    league_code: NBA
+    note: "Season starts ~Oct 2026 -- revisit then."
+
+  nhl:
+    enabled: false
+    sport: hockey
+    league_code: NHL
+    note: "Season starts ~Oct 2026 -- revisit then."
+
+edge_threshold_pct: 3.0     # minimum model edge to log a paper bet
+kelly_multiplier: 0.25      # fractional Kelly for staking
