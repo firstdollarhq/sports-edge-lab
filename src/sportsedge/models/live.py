@@ -13,7 +13,12 @@ import pandas as pd
 from sportsedge.models.calibration import SoccerOutcomeCalibrator
 from sportsedge.models.elo import NflEloModel, SoccerEloModel
 
-NFL_MODEL_VERSION = "nfl-elo-v1"
+# v2: the week-ordering fix (see backtest/engine.py). v1 ratings were built
+# from a season processed 1, 10, 11 ... 18, 19, 2, so every v1 price came from
+# a different model than the one this code now defines. The version string has
+# to move when behaviour moves, or the ledger silently mixes two models under
+# one label and the shadow evidence means nothing.
+NFL_MODEL_VERSION = "nfl-elo-v2"
 SOCCER_MODEL_VERSION = "epl-elo-logit-v1"
 
 

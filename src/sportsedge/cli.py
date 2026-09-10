@@ -190,6 +190,13 @@ def cmd_recommend(args):
         rows = snapshot_moneylines(sport)
         snapshots.append_snapshot(rows, sport=sport)
 
+        # Recommend only on quotes that pass the liquidity gate. This was
+        # missing: partition() was applied in snapshot-odds but not here, so
+        # the recommender priced against the raw board and could log a bet on
+        # a quote the project's own filter rejects -- exactly the "fake edge
+        # against a price nobody is offering" that liquidity.py exists to stop.
+        rows, rejected = liquidity.partition(rows, **config.liquidity_kwargs())
+
         if sport == "nfl":
             model = build_nfl_model(games, use_mov=args.mov)
             recs = recommend_mod.recommend_nfl(
@@ -223,7 +230,8 @@ def cmd_recommend(args):
                 logged += 1
 
         out[sport] = {
-            "contracts": len(rows), "recommendations": len(recs),
+            "contracts": len(rows),
+            "illiquid_skipped": len(rejected), "recommendations": len(recs),
             "mode": mode, "live_enabled": live,
             "logged": logged, "skipped_duplicate": skipped,
             "flagged_rate_pct": round(100 * len(recs) / max(1, len(rows)), 1),
