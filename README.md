@@ -5,16 +5,20 @@ A research project testing predictive sports models against real market odds.
 to find a real, validated edge, not to confirm a bias. See `journal/` for an
 honest, dated log of what was tried and what happened.
 
-## Status (2026-09-10, project creation)
+## Status (2026-09-10, scheduled run #1)
 
-- **0 bets placed.** This repo did not exist before today.
+- **0 live bets. 39 shadow bets** (27 NFL, 12 EPL), all pending — they settle
+  Sep 19-22. Shadow bets record what an unvalidated model *would* have done;
+  they are excluded from headline win rate and ROI.
 - Two leagues active: **NFL** (season underway) and **EPL** (English Premier
   League, season underway). NBA/NHL are stubbed in `config/leagues.yaml` but
   disabled — their seasons start in ~a month.
-- Baseline Elo models are built and backtested against real historical closing
-  odds. **Neither currently beats the market** (see `journal/2026-09-10-project-kickoff-*.md`
-  for numbers) — they are not yet deployed for live recommendations. This is
-  the expected/correct first result for a naive baseline, not a setback.
+- **102 model configurations backtested across both sports. None beat the
+  market.** Nothing adopted, `live_enabled` is `false` everywhere. The gap is
+  an information gap, not a calibration bug — parameter tuning is exhausted.
+  See `journal/2026-09-10-scheduled-run-1-*.md`.
+- The full loop now exists end-to-end: snapshot → recommend → settle → CLV.
+  Before this run there was no code path that could place or settle a bet.
 
 ## Why these data sources
 
@@ -35,12 +39,37 @@ leagues we're starting with, so it's now the primary live-odds source.
 ```
 src/sportsedge/
   ingest/       nfl_stats.py, soccer_stats.py (historical), kalshi.py (live odds)
+                teams.py (Kalshi ticker -> stats-source team resolution)
   models/       elo.py (rating engines), calibration.py (soccer 3-way outcome calibration)
+                live.py (current-strength ratings for pricing today's games)
   backtest/     engine.py (walk-forward backtest, no lookahead), metrics.py
   betting/      edge.py (de-vig, EV, Kelly), ledger.py (bets/ledger.csv)
+                liquidity.py (is this quote fillable?), recommend.py (model vs market)
+                settle.py (resolve bets, compute CLV)
   journal/      entry.py (dated markdown journal entries)
   storage/      db.py + schema.sql (SQLite historical database)
+                snapshots.py (committed odds capture — see below)
 ```
+
+### Odds snapshots are the one irreplaceable asset
+
+`data/snapshots/<sport>/<date>.csv` is deliberately **not** gitignored. Live
+odds cannot be reconstructed after the fact, and each session runs in a fresh
+container, so these committed CSVs are the only durable record. Closing-line
+value depends entirely on having captured a price before kickoff — a missed
+snapshot window is permanently missing data.
+
+### Team resolution: the ticker order differs by sport
+
+Kalshi encodes both teams in the event ticker, but **not in the same order**:
+
+- NFL is `AWAY+HOME` — `KXNFLGAME-26SEP21NYGLAR` is NYG *at* the Rams.
+- EPL is `HOME+AWAY` — `KXEPLGAME-26SEP06ARSCFC` is Arsenal *hosting* Chelsea.
+
+Both were verified against the stats sources (nflverse, football-data.co.uk)
+rather than assumed, and both are pinned by tests. Getting either backwards
+inverts every prediction for that sport while leaving aggregate metrics looking
+entirely plausible.
 
 ### Model approach
 
@@ -60,15 +89,35 @@ src/sportsedge/
 1. Compute model win probability for each side of a market.
 2. De-vig the market's own implied probabilities (two-way for NFL moneyline,
    three-way for soccer 1X2) to get a fair-odds baseline for comparison.
-3. `edge_pct = model_prob * decimal_odds - 1`. A paper bet is only logged if
-   edge clears **`edge_threshold_pct`** (default 3%, see `config/leagues.yaml`).
-4. Stake sizing uses **fractional Kelly** (`kelly_multiplier = 0.25` by
+3. Drop any quote that isn't actually fillable (`betting/liquidity.py`: spread,
+   resting size, traded volume, extreme prices). On EPL this currently removes
+   ~⅓ of contracts — pricing off a stale book manufactures fake edges.
+4. `edge_pct = model_prob * decimal_odds - 1`, **priced at the ask**, not the
+   mid. The ask is what you'd actually pay; using the mid silently credits the
+   model with half the spread on every bet. A paper bet is only logged if edge
+   clears **`edge_threshold_pct`** (default 3%, see `config/leagues.yaml`).
+5. Stake sizing uses **fractional Kelly** (`kelly_multiplier = 0.25` by
    default) — never full Kelly, which is too volatile for a model with
    uncertain calibration.
-5. Every bet, win or loss, goes in `bets/ledger.csv` with model prob, market
+6. Every bet, win or loss, goes in `bets/ledger.csv` with model prob, market
    odds, edge, and (once the game closes) closing odds and CLV — closing
    line value is tracked independently of win/loss because it's a better
    short-run signal of whether the model has real skill than win rate alone.
+
+## The deployment gate: shadow vs. live
+
+`live_enabled` in `config/leagues.yaml` is `false` for every league, and stays
+false until that league's model **beats the de-vigged closing line
+out-of-sample** — not merely improves on an earlier version of itself.
+
+While it's false the recommender still runs, but every row it writes is a
+`shadow` bet: recorded as evidence, reported separately, never folded into
+headline win rate or ROI. A model that loses to the market and gets deployed
+anyway just launders a bias into a bet history.
+
+Flipping that flag is the single decision that turns this from a research log
+into a betting record. It should never happen as a side effect of another
+change.
 
 ## Backtesting discipline
 
@@ -90,7 +139,7 @@ python -m sportsedge.cli backtest-soccer --league E0 --seasons 1920 2021 2122 22
 
 ```bash
 pip install -e ".[dev]"
-pytest                                  # 17 tests, no network needed
+pytest                                  # 57 tests, no network needed
 cp .env.example .env                    # only needed for optional sources
 python -m sportsedge.cli kalshi-nfl     # live NFL market snapshot, no key needed
 python -m sportsedge.cli kalshi-epl     # live EPL market snapshot, no key needed
@@ -98,6 +147,19 @@ python -m sportsedge.cli ingest-nfl --seasons 2023 2024
 python -m sportsedge.cli ingest-soccer --league E0 --seasons 2324 2425
 python -m sportsedge.cli ledger-summary
 ```
+
+### The recurring loop
+
+```bash
+python -m sportsedge.cli snapshot-odds        # capture live odds (run often!)
+python -m sportsedge.cli recommend --dry-run  # see picks without writing
+python -m sportsedge.cli recommend            # write to bets/ledger.csv
+python -m sportsedge.cli settle               # resolve finished games, fill CLV
+python -m sportsedge.cli verify-settlements   # cross-check Kalshi vs stats source
+```
+
+`recommend` is idempotent per (contract, model version), so re-running on a
+schedule won't inflate the bet count.
 
 ## Journal discipline
 
@@ -109,14 +171,21 @@ confirming a bias.**
 
 ## Open questions / next steps
 
-- Baseline Elo underperforms the market on both NFL (log-loss 0.653 vs.
-  market 0.610) and EPL (0.607 vs. 0.590) — before this improves, there is
-  no real edge to bet, only threshold noise. Next candidate improvements to
-  backtest (not yet adopted): incorporate injury/QB-change signals for NFL,
-  try a shorter Elo half-life / higher K for soccer, and widen the calibration
-  training window.
-- Kalshi order-book liquidity varies a lot by market — need to add a min
-  liquidity/volume filter before treating a Kalshi quote as a real, fillable
-  price rather than a stale one.
-- Not yet decided: whether to also pull The Odds API (paid) for a second,
-  traditional-sportsbook price to compare against Kalshi's exchange price.
+- **Elo parameter tuning is exhausted.** 102 configurations were swept
+  out-of-sample across both sports (48 NFL, 54 EPL) and *none* beat the market.
+  The remaining gap is information the market has and Elo doesn't. The next
+  model direction is adding information — QB-change/injury signals for NFL are
+  the highest-value candidate — not retuning what's there.
+- The two sports fail for *different* reasons and shouldn't get the same fix:
+  NFL is under-dispersed (model sd 0.100 vs market 0.183) and overrates
+  underdogs; EPL's dispersion is already fine (0.207 vs 0.192) and its gap is
+  purely informational.
+- ~~Kalshi liquidity filter~~ — **done** (`betting/liquidity.py`). It currently
+  rejects 1/62 NFL contracts but 22/60 EPL contracts, almost all on thin volume.
+- **Needs the owner (money):** The Odds API Professional (~$29/mo) for a second,
+  sportsbook-style price to compare against Kalshi's exchange price.
+- **Needs the owner (account):** football-data.org's free tier requires an API
+  key that a human must create.
+- Snapshot cadence: CLV requires a captured pre-kickoff price, so a once-daily
+  snapshot will miss closing prices for games starting between runs. Run
+  `snapshot-odds` several times a day, or at minimum shortly before each slate.

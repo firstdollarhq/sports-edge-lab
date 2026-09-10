@@ -9,4 +9,7 @@ data/raw/*
 data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+# data/snapshots/ is deliberately NOT ignored: live odds cannot be
+# reconstructed after the fact, and the container is wiped between runs, so the
+# committed CSVs are the only durable record. See storage/snapshots.py.
 .env

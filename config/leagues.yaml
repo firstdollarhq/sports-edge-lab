@@ -1,34 +1,59 @@
 # Which sports/leagues are active. NHL and NBA seasons haven't started yet
 # (~a month out as of 2026-09-10) so they're present but disabled.
+#
+# live_enabled is the deployment gate. It is FALSE for every league until that
+# league's model beats the closing line out-of-sample in backtest. While it is
+# false the recommender still runs, but everything it produces is logged as a
+# 'shadow' bet: recorded as evidence, excluded from headline win rate and ROI,
+# and never presented as a validated edge. Flipping this to true is the single
+# decision that turns this from a research log into a betting record, so it
+# should never be flipped as a side effect of another change.
 
 leagues:
   nfl:
     enabled: true
+    live_enabled: false               # baseline Elo loses to market; see journal
     sport: nfl
     league_code: NFL
     stats_source: nflverse            # free, no key
     odds_source: kalshi                # free, no key (KXNFLGAME series)
     kalshi_series: KXNFLGAME
+    # Seasons used to build current Elo ratings for live pricing.
+    rating_seasons: [2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
 
   epl:
     enabled: true
+    live_enabled: false               # baseline Elo loses to market; see journal
     sport: soccer
     league_code: E0
     stats_source: football-data.co.uk  # free, no key (historical)
     odds_source: kalshi                 # free, no key (KXEPLGAME series)
     kalshi_series: KXEPLGAME
+    rating_seasons: ["1920", "2021", "2122", "2223", "2324", "2425", "2526", "2627"]
 
   nba:
     enabled: false
+    live_enabled: false
     sport: basketball
     league_code: NBA
     note: "Season starts ~Oct 2026 -- revisit then."
 
   nhl:
     enabled: false
+    live_enabled: false
     sport: hockey
     league_code: NHL
     note: "Season starts ~Oct 2026 -- revisit then."
 
 edge_threshold_pct: 3.0     # minimum model edge to log a paper bet
 kelly_multiplier: 0.25      # fractional Kelly for staking
+flat_stake: 1.0             # unit stake used for shadow bookkeeping
+
+# Minimum market quality before a Kalshi quote is treated as fillable rather
+# than stale. Conservative defaults, not tuned -- see betting/liquidity.py.
+liquidity:
+  max_spread: 0.05
+  min_ask_size: 50
+  min_volume: 500
+  min_price: 0.03
+  max_price: 0.97

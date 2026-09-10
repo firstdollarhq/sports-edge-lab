@@ -6,6 +6,10 @@
     python -m sportsedge.cli backtest-soccer --league E0 --seasons 2223 2324 2425
     python -m sportsedge.cli kalshi-nfl
     python -m sportsedge.cli kalshi-epl
+    python -m sportsedge.cli snapshot-odds            # capture + persist live odds
+    python -m sportsedge.cli recommend --sport nfl    # model vs market -> ledger
+    python -m sportsedge.cli settle                   # resolve bets + fill CLV
+    python -m sportsedge.cli verify-settlements       # cross-check Kalshi vs stats
     python -m sportsedge.cli ledger-summary
 """
 from __future__ import annotations
@@ -13,13 +17,19 @@ from __future__ import annotations
 import argparse
 import json
 
-from sportsedge.storage import db
+from sportsedge import config
+from sportsedge.storage import db, snapshots
 from sportsedge.ingest.nfl_stats import fetch_nfl_games
 from sportsedge.ingest.soccer_stats import fetch_soccer_games
-from sportsedge.ingest.kalshi import snapshot_nfl_moneylines, snapshot_epl_moneylines
+from sportsedge.ingest.kalshi import snapshot_moneylines, snapshot_nfl_moneylines, snapshot_epl_moneylines
 from sportsedge.models.elo import NflEloModel, SoccerEloModel
+from sportsedge.models.live import build_nfl_model, build_soccer_model
 from sportsedge.backtest.engine import backtest_nfl, backtest_soccer
+from sportsedge.betting import liquidity, recommend as recommend_mod, settle as settle_mod
+from sportsedge.betting import ledger as ledger_mod
 from sportsedge.betting.ledger import summarize
+
+SPORT_TO_LEAGUE_KEY = {"nfl": "nfl", "soccer": "epl"}
 
 
 def cmd_ingest_nfl(args):
@@ -55,17 +65,116 @@ def cmd_backtest_soccer(args):
 
 
 def cmd_kalshi_nfl(_args):
-    rows = snapshot_nfl_moneylines()
-    for r in rows[:20]:
-        print(r["event_ticker"], r["selection"], r["implied_prob_mid"])
-    print(f"... {len(rows)} markets total")
+    _print_snapshot(snapshot_nfl_moneylines())
 
 
 def cmd_kalshi_epl(_args):
-    rows = snapshot_epl_moneylines()
+    _print_snapshot(snapshot_epl_moneylines())
+
+
+def _print_snapshot(rows):
     for r in rows[:20]:
-        print(r["event_ticker"], r["selection"], r["implied_prob_mid"])
-    print(f"... {len(rows)} markets total")
+        print(f"{r['away_team']} @ {r['home_team']:<16} {r['selection']:<5} "
+              f"mid={r['implied_prob_mid']} spread={r['spread']}")
+    print(f"... {len(rows)} contracts total")
+
+
+def cmd_snapshot_odds(args):
+    """Capture live odds to the committed snapshot store.
+
+    This is the job that must run often: odds are not reconstructable after the
+    fact, so a missed window is permanently missing data.
+    """
+    total = {}
+    for sport in args.sports:
+        rows = snapshot_moneylines(sport)
+        keep, drop = liquidity.partition(rows, **config.liquidity_kwargs())
+        res = snapshots.append_snapshot(rows, sport=sport)
+        total[sport] = {"contracts": len(rows), "fillable": len(keep),
+                        "rejected": len(drop), **res}
+    print(json.dumps(total, indent=2, default=str))
+
+
+def _load_games_for(sport: str):
+    key = SPORT_TO_LEAGUE_KEY[sport]
+    league_cfg = config.league(key)
+    seasons = league_cfg["rating_seasons"]
+    if sport == "nfl":
+        return fetch_nfl_games([int(s) for s in seasons])
+    return fetch_soccer_games(league_cfg["league_code"], [str(s) for s in seasons])
+
+
+def cmd_recommend(args):
+    cfg = config.load()
+    threshold = (args.edge_threshold if args.edge_threshold is not None
+                 else cfg["edge_threshold_pct"]) / 100
+    kelly_mult = cfg["kelly_multiplier"]
+    stake = cfg.get("flat_stake", 1.0)
+
+    out = {}
+    for sport in args.sports:
+        key = SPORT_TO_LEAGUE_KEY[sport]
+        games = _load_games_for(sport)
+        rows = snapshot_moneylines(sport)
+        snapshots.append_snapshot(rows, sport=sport)
+
+        if sport == "nfl":
+            model = build_nfl_model(games, use_mov=args.mov)
+            recs = recommend_mod.recommend_nfl(
+                rows, model, edge_threshold=threshold, kelly_multiplier=kelly_mult)
+        else:
+            model, calibrator = build_soccer_model(games)
+            recs = recommend_mod.recommend_soccer(
+                rows, model, calibrator, edge_threshold=threshold, kelly_multiplier=kelly_mult)
+
+        live = config.is_live_enabled(key)
+        mode = ledger_mod.LIVE if live else ledger_mod.SHADOW
+        logged, skipped = 0, 0
+        if not args.dry_run:
+            seen = ledger_mod.existing_keys()
+            for r in recs:
+                if (r["market_ticker"], r["model_version"]) in seen:
+                    skipped += 1
+                    continue
+                ledger_mod.add_bet(
+                    sport=r["sport"], league=r["league"], game_id=r["event_ticker"],
+                    matchup=r["matchup"], market=r["market"], selection=r["selection"],
+                    model_prob=r["model_prob"], model_version=r["model_version"],
+                    market_odds_decimal=r["market_odds_decimal"], book=r["book"],
+                    edge_pct=r["edge_pct"], stake=stake,
+                    kelly_fraction=r["kelly_fraction"], mode=mode,
+                    market_ticker=r["market_ticker"],
+                    market_fair_prob=r["market_fair_prob"],
+                    commence_time=r["commence_time"],
+                    notes="" if live else "model not cleared by backtest; shadow only",
+                )
+                logged += 1
+
+        out[sport] = {
+            "contracts": len(rows), "recommendations": len(recs),
+            "mode": mode, "live_enabled": live,
+            "logged": logged, "skipped_duplicate": skipped,
+            "flagged_rate_pct": round(100 * len(recs) / max(1, len(rows)), 1),
+        }
+        for r in sorted(recs, key=lambda x: -x["edge_pct"])[:args.top]:
+            print(f"  [{mode}] {r['matchup']:<34} {r['selection']:<5} "
+                  f"model={r['model_prob']:.3f} fair={r['market_fair_prob']:.3f} "
+                  f"ask={r['price_ask']:.2f} edge={r['edge_pct']:+.1f}%")
+    print(json.dumps(out, indent=2, default=str))
+
+
+def cmd_settle(args):
+    res = settle_mod.settle_pending(dry_run=args.dry_run)
+    print(json.dumps(res, indent=2, default=str))
+
+
+def cmd_verify_settlements(args):
+    out = {}
+    for sport in args.sports:
+        games = _load_games_for(sport)
+        r = settle_mod.verify_against_stats(games, sport)
+        out[sport] = r
+    print(json.dumps(out, indent=2, default=str))
 
 
 def cmd_ledger_summary(_args):
@@ -102,6 +211,26 @@ def main():
 
     p = sub.add_parser("kalshi-epl")
     p.set_defaults(func=cmd_kalshi_epl)
+
+    p = sub.add_parser("snapshot-odds")
+    p.add_argument("--sports", nargs="+", default=["nfl", "soccer"])
+    p.set_defaults(func=cmd_snapshot_odds)
+
+    p = sub.add_parser("recommend")
+    p.add_argument("--sports", nargs="+", default=["nfl", "soccer"])
+    p.add_argument("--edge-threshold", type=float, default=None, help="percent")
+    p.add_argument("--mov", action="store_true")
+    p.add_argument("--dry-run", action="store_true", help="print without writing the ledger")
+    p.add_argument("--top", type=int, default=10)
+    p.set_defaults(func=cmd_recommend)
+
+    p = sub.add_parser("settle")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_settle)
+
+    p = sub.add_parser("verify-settlements")
+    p.add_argument("--sports", nargs="+", default=["nfl", "soccer"])
+    p.set_defaults(func=cmd_verify_settlements)
 
     p = sub.add_parser("ledger-summary")
     p.set_defaults(func=cmd_ledger_summary)
