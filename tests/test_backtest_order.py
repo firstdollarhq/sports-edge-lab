@@ -52,3 +52,23 @@ def test_string_weeks_do_not_reorder_the_season():
     # ...whereas the raw string sort does not:
     naive = df.sort_values(["season", "week", "game_date"])["week"].tolist()
     assert naive[:3] == ["1", "10", "11"], "documents the bug this guards against"
+
+
+def test_live_model_orders_the_season_the_same_way_the_backtest_does():
+    """live.build_nfl_model must match backtest.engine's chronology exactly.
+
+    Its docstring promises the live model is the same model the backtest
+    measured. A raw string sort here would break that silently: backtest
+    numbers would stop describing the ratings actually used to price bets.
+    """
+    from sportsedge.models.live import build_nfl_model
+
+    df = _season(list(range(1, 19)))
+    as_int = build_nfl_model(df.copy())
+    as_str_df = df.copy()
+    as_str_df["week"] = as_str_df["week"].astype(str)
+    as_str = build_nfl_model(as_str_df)
+
+    assert as_int.book.ratings == as_str.book.ratings, (
+        "string weeks must not change the ratings the live model ends up with"
+    )

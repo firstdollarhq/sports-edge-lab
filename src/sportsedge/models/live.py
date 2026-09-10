@@ -22,7 +22,13 @@ def build_nfl_model(games: pd.DataFrame, *, use_mov: bool = False,
     """Run Elo through every completed game, chronologically, and keep ratings."""
     model = NflEloModel(use_mov_multiplier=use_mov)
     played = games.dropna(subset=["home_score", "away_score"])
-    played = played.sort_values(["season", "week", "game_date"])
+    # Numeric week, matching backtest.engine exactly. Sorting the raw column
+    # puts "10" before "2" when the ingest hands over strings, which builds
+    # today's ratings from a scrambled season -- and silently breaks the
+    # promise in this module's docstring that the live model is the same model
+    # the backtest measured.
+    played = played.assign(_week_num=pd.to_numeric(played["week"], errors="coerce"))
+    played = played.sort_values(["season", "_week_num", "game_date"]).drop(columns=["_week_num"])
 
     prev_season = None
     for _, g in played.iterrows():
