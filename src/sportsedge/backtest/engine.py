@@ -1,12 +1,19 @@
 """Walk-forward backtests: ratings are only ever updated using games that have
 already been predicted, so there is no lookahead leakage. Games are processed
 in chronological order within each season; ratings partially regress to the
-mean between seasons (standard Elo practice)."""
+mean between seasons (standard Elo practice).
+
+PRICING: these two backtests run against SPORTSBOOK odds (nflverse
+moneylines, football-data.co.uk bookmaker averages). A sportsbook quote is
+already the price you get -- the vig is baked into it -- so there is no
+mid-vs-ask adjustment to make here. The mid-vs-ask problem is specific to
+the exchange (Kalshi), where a two-sided book tempts you to price off the
+mid; see backtest.kalshi_engine for that venue."""
 from __future__ import annotations
 
 import pandas as pd
 
-from sportsedge.betting.edge import devig_two_way, devig_three_way, edge_pct
+from sportsedge.betting.edge import devig_two_way, devig_three_way, edge_fraction
 from sportsedge.models.elo import NflEloModel
 from sportsedge.models.calibration import SoccerOutcomeCalibrator
 from sportsedge.models.elo import SoccerEloModel
@@ -35,16 +42,16 @@ def backtest_nfl(games: pd.DataFrame, model: NflEloModel, edge_threshold: float 
             imp_home = 1 / g["home_odds_decimal"]
             imp_away = 1 / g["away_odds_decimal"]
             fair_home, _ = devig_two_way(imp_home, imp_away)
-            model_edge = edge_pct(p_home, g["home_odds_decimal"])
+            model_edge = edge_fraction(p_home, g["home_odds_decimal"])
             if model_edge >= edge_threshold:
                 bets.append({"model_prob": p_home, "decimal_odds": g["home_odds_decimal"],
                               "won": g["result"] == "H", "fair_market_prob": fair_home,
-                              "edge_pct": model_edge, "game_id": g["game_id"]})
-            away_edge = edge_pct(1 - p_home, g["away_odds_decimal"])
+                              "edge_frac": model_edge, "game_id": g["game_id"]})
+            away_edge = edge_fraction(1 - p_home, g["away_odds_decimal"])
             if away_edge >= edge_threshold:
                 bets.append({"model_prob": 1 - p_home, "decimal_odds": g["away_odds_decimal"],
                               "won": g["result"] == "A", "fair_market_prob": 1 - fair_home,
-                              "edge_pct": away_edge, "game_id": g["game_id"]})
+                              "edge_frac": away_edge, "game_id": g["game_id"]})
 
         model.update(g["home_team"], g["away_team"], g["home_score"], g["away_score"])
 
@@ -98,10 +105,10 @@ def backtest_soccer(games: pd.DataFrame, model: SoccerEloModel, edge_threshold: 
             fair_h, fair_d, fair_a = devig_three_way(imp["H"], imp["D"], imp["A"])
             fair = {"H": fair_h, "D": fair_d, "A": fair_a}
             for outcome, (p_model, dec_odds, won) in odds.items():
-                e = edge_pct(p_model, dec_odds)
+                e = edge_fraction(p_model, dec_odds)
                 if e >= edge_threshold:
                     bets.append({"model_prob": p_model, "decimal_odds": dec_odds, "won": won,
-                                  "fair_market_prob": fair[outcome], "edge_pct": e,
+                                  "fair_market_prob": fair[outcome], "edge_frac": e,
                                   "game_id": g["game_id"], "selection": outcome})
 
         model.update(g["home_team"], g["away_team"], g["home_score"], g["away_score"])

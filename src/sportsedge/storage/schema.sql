@@ -35,14 +35,26 @@ CREATE TABLE IF NOT EXISTS market_snapshots (
     sport TEXT NOT NULL,
     league TEXT NOT NULL,
     event_ticker TEXT,                -- Kalshi event ticker when source='kalshi'
+    market_ticker TEXT,               -- Kalshi per-contract ticker
     game_id TEXT,                     -- fk to games.game_id once matched
-    home_team TEXT NOT NULL,
-    away_team TEXT NOT NULL,
+    home_team TEXT,
+    away_team TEXT,
     commence_time TEXT,
-    selection TEXT NOT NULL,          -- 'home' | 'away' | 'draw'
+    selection TEXT NOT NULL,          -- team name as printed by the venue, or 'Tie'
     yes_bid REAL,
     yes_ask REAL,
-    implied_prob_mid REAL,
+    implied_prob_mid REAL,            -- fair-value estimate, NOT tradeable
+    executable_prob_yes REAL,         -- the ask: what buying YES actually costs
+    spread_cost_frac REAL,            -- ask/mid - 1: edge lost by crossing the spread
+    -- Liquidity. NOTE: Kalshi's `liquidity_dollars` reads 0.0000 on every
+    -- market sampled, so it is deliberately not stored. These four are the
+    -- fields that actually carry signal.
+    volume REAL,
+    volume_24h REAL,
+    open_interest REAL,
+    yes_bid_size REAL,
+    yes_ask_size REAL,
+    status TEXT,
     source TEXT NOT NULL,             -- 'kalshi' | 'theoddsapi'
     fetched_at TEXT NOT NULL
 );

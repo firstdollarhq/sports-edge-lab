@@ -4,9 +4,12 @@ __pycache__/
 venv/
 *.egg-info/
 .pytest_cache/
+# SQLite is a derived cache, rebuilt from data/processed/ -- never the record.
 data/*.db
+# Raw downloads are re-fetchable and bulky.
 data/raw/*
-data/processed/*
 !data/raw/.gitkeep
-!data/processed/.gitkeep
+# data/processed/ and data/snapshots/ ARE the durable record and are committed:
+# the container is ephemeral, and a pre-kickoff quote that was not recorded
+# cannot be reconstructed later. See storage/snapshots.py.
 .env

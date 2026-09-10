@@ -29,7 +29,11 @@ def fetch_soccer_games(league_code: str, seasons: list[str]) -> pd.DataFrame:
 
     for season in seasons:
         url = BASE_URL.format(season=season, league=league_code)
-        raw = pd.read_csv(url)
+        try:
+            raw = pd.read_csv(url)
+        except UnicodeDecodeError:
+            # Older football-data files carry latin-1 bytes in referee names.
+            raw = pd.read_csv(url, encoding="latin-1")
         raw = raw.dropna(subset=["HomeTeam", "AwayTeam", "FTR"])
 
         home_odds = raw["AvgH"] if "AvgH" in raw.columns else raw.get("B365H")
@@ -39,10 +43,18 @@ def fetch_soccer_games(league_code: str, seasons: list[str]) -> pd.DataFrame:
         game_date = pd.to_datetime(raw["Date"], dayfirst=True).dt.strftime("%Y-%m-%d")
         season_label = f"20{season[:2]}-{season[2:]}"
 
+        # Deterministic ID from (season, date, teams) rather than row index.
+        # In-progress seasons get re-ingested repeatedly as results land; an
+        # index-based ID silently re-points at a different fixture the moment
+        # football-data.co.uk inserts or reorders a row, which would corrupt
+        # the merge in storage.snapshots.write_processed().
+        game_ids = [
+            f"soccer_{league_code}_{season}_{d}_{h}_{a}".replace(" ", "")
+            for d, h, a in zip(game_date, raw["HomeTeam"], raw["AwayTeam"])
+        ]
+
         df = pd.DataFrame({
-            "game_id": [
-                f"soccer_{league_code}_{season}_{i}" for i in range(len(raw))
-            ],
+            "game_id": game_ids,
             "sport": "soccer",
             "league": LEAGUE_NAMES.get(league_code, league_code),
             "season": season_label,
