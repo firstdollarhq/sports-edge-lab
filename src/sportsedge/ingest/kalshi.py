@@ -13,7 +13,7 @@ printed team names, so no fuzzy name matching is involved.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -167,3 +167,56 @@ def fetch_settled_results(sport: str) -> dict[str, str]:
         if result in ("yes", "no") and m.get("ticker"):
             out[m["ticker"]] = result
     return out
+
+
+# -- historical prices via candlesticks ---------------------------------------
+#
+# Verified against the live API 2026-09-10. Two traps here, both of which
+# produce plausible-looking numbers if you get them wrong:
+#
+#  1. A settled market cannot be used to reconstruct its own closing price.
+#     The book empties on settlement, so previous_yes_bid_dollars reads 0.0000
+#     and previous_yes_ask_dollars reads 1.0000 on EVERY settled market.
+#  2. The last candle before settlement is an IN-PLAY price. NFL markets close
+#     hours after kickoff, by which point the price has absorbed the result.
+#     Using it as a "closing line" is lookahead leakage in a convincing costume.
+#
+# This matters because every backtest so far measures the model against
+# sportsbook closing lines, while Kalshi is the venue we would actually trade.
+
+
+def fetch_candlesticks(series_ticker: str, market_ticker: str, start_ts: int,
+                       end_ts: int, period_interval: int = 60) -> list[dict]:
+    """Historical bid/ask/volume series. period_interval is minutes (1, 60, 1440)."""
+    path = f"/series/{series_ticker}/markets/{market_ticker}/candlesticks"
+    data = _get(path, params={"start_ts": start_ts, "end_ts": end_ts,
+                              "period_interval": period_interval})
+    return data.get("candlesticks", [])
+
+
+def closing_quote_before(series_ticker: str, market_ticker: str, kickoff: datetime,
+                         lookback_hours: int = 72) -> dict | None:
+    """Last two-sided quote strictly BEFORE kickoff -- not before settlement."""
+    end_ts = int(kickoff.timestamp())
+    start_ts = int((kickoff - timedelta(hours=lookback_hours)).timestamp())
+    candles = fetch_candlesticks(series_ticker, market_ticker, start_ts, end_ts)
+
+    for candle in reversed(candles):
+        if candle.get("end_period_ts", 0) > end_ts:
+            continue
+        bid = _f((candle.get("yes_bid") or {}).get("close_dollars"))
+        ask = _f((candle.get("yes_ask") or {}).get("close_dollars"))
+        if bid is None or ask is None or bid <= 0 or ask <= 0 or ask <= bid:
+            continue
+        return {
+            "market_ticker": market_ticker,
+            "ts": datetime.fromtimestamp(candle["end_period_ts"], timezone.utc).isoformat(),
+            "yes_bid": bid,
+            "yes_ask": ask,
+            "implied_prob_mid": (bid + ask) / 2,
+            "executable_prob_yes": ask,
+            "spread_cost_frac": ask / ((bid + ask) / 2) - 1,
+            "volume": _f(candle.get("volume_fp")),
+            "open_interest": _f(candle.get("open_interest_fp")),
+        }
+    return None

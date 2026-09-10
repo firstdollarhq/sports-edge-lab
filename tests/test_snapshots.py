@@ -59,3 +59,40 @@ def test_latest_before_picks_last_pre_kickoff_quote(tmp_path, monkeypatch):
 def test_latest_before_returns_none_when_no_history(tmp_path, monkeypatch):
     monkeypatch.setattr(snapshots, "SNAPSHOT_ROOT", tmp_path)
     assert snapshots.latest_before("nfl", "missing", "2026-09-22T03:15:00Z") is None
+
+
+# -- historical game tables ---------------------------------------------------
+
+def test_reingesting_an_in_progress_season_fills_scores_without_duplicating(tmp_path, monkeypatch):
+    """In-progress seasons get re-ingested every run as results land.
+
+    The merge is keyed on game_id, so a fixture logged while unplayed must be
+    updated in place rather than appended a second time.
+    """
+    import pandas as pd
+    from sportsedge.storage import snapshots as snap
+    monkeypatch.setattr(snap, "PROCESSED_DIR", tmp_path / "processed")
+
+    unplayed = pd.DataFrame([{
+        "game_id": "soccer_E0_2627_2026-09-20_Fulham_ManUnited",
+        "season": "2026-27", "game_date": "2026-09-20",
+        "home_team": "Fulham", "away_team": "Man United",
+        "home_score": None, "away_score": None, "result": None,
+    }])
+    snap.write_processed("epl_games", unplayed)
+
+    played = unplayed.copy()
+    played.loc[0, ["home_score", "away_score", "result"]] = [1, 2, "A"]
+    snap.write_processed("epl_games", played)
+
+    df = snap.read_processed("epl_games")
+    assert len(df) == 1, "same fixture must not be stored twice"
+    assert df.iloc[0]["result"] == "A", "later ingest must fill in the result"
+
+
+def test_read_processed_names_the_fix_when_missing(tmp_path, monkeypatch):
+    import pytest
+    from sportsedge.storage import snapshots as snap
+    monkeypatch.setattr(snap, "PROCESSED_DIR", tmp_path / "processed")
+    with pytest.raises(FileNotFoundError, match="refresh-history"):
+        snap.read_processed("nfl_games")

@@ -20,7 +20,11 @@ def fetch_nfl_games(seasons: list[int]) -> pd.DataFrame:
         "sport": "nfl",
         "league": "NFL",
         "season": df["season"].astype(str),
-        "week": df["week"].astype(str),
+        # Nullable int, NOT str. The backtest sorts on this column to
+        # establish chronology; as a string, "10" sorts before "2" and the
+        # season is processed 1, 10, 11 ... 18, 19, 2, 20 -- i.e. the model
+        # predicts week 2 using ratings that already absorbed weeks 10-18.
+        "week": df["week"].astype("Int64"),
         "game_date": df["gameday"],
         "home_team": df["home_team"],
         "away_team": df["away_team"],

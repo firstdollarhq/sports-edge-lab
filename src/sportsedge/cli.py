@@ -1,5 +1,7 @@
 """Command-line entry points.
 
+    python -m sportsedge.cli refresh-history          # rebuild durable game tables
+    python -m sportsedge.cli spread-report            # what crossing the spread costs today
     python -m sportsedge.cli ingest-nfl --seasons 2023 2024
     python -m sportsedge.cli ingest-soccer --league E0 --seasons 2324 2425
     python -m sportsedge.cli backtest-nfl --seasons 2020 2021 2022 2023 2024
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
 
 from sportsedge import config
 from sportsedge.storage import db, snapshots
@@ -48,8 +51,76 @@ def cmd_ingest_soccer(args):
     print(f"Ingested {n} {args.league} games ({games['season'].nunique()} seasons)")
 
 
+def _nfl_season_labels(seasons):
+    return {str(s) for s in seasons}
+
+
+def _epl_season_labels(seasons):
+    """'2526' -> '2025-26', matching the label fetch_soccer_games writes."""
+    return {f"20{str(s)[:2]}-{str(s)[2:]}" for s in seasons}
+
+
+def _load_games(table, seasons, label_fn, fetch, *fetch_args):
+    """Prefer the committed table; fall back to a live fetch if it is absent.
+
+    The season filter is applied AFTER loading. The committed table holds every
+    season ever ingested, so reading it unfiltered silently ignores --seasons
+    and hands the backtest a different sample than the one requested -- which
+    in practice meant holding out the 30-game in-progress season instead of a
+    completed 380-game one, and reporting the result as if it meant something.
+    """
+    try:
+        df = snapshots.read_processed(table)
+    except FileNotFoundError:
+        df = fetch(*fetch_args)
+    wanted = label_fn(seasons)
+    filtered = df[df["season"].astype(str).isin(wanted)]
+    missing = wanted - set(filtered["season"].astype(str))
+    if missing:
+        print(f"[warn] no rows for seasons: {sorted(missing)}")
+    if filtered.empty:
+        raise SystemExit(f"No games for seasons {sorted(wanted)} in {table}")
+    return filtered
+
+
+def cmd_refresh_history(args):
+    """Rebuild the durable historical game tables from the free upstream sources."""
+    nfl = fetch_nfl_games(args.nfl_seasons)
+    path, n = snapshots.write_processed("nfl_games", nfl)
+    print(f"nfl_games -> {path} ({n} rows, {int(nfl['home_score'].notna().sum())} played)")
+
+    epl = fetch_soccer_games("E0", args.epl_seasons)
+    path, n = snapshots.write_processed("epl_games", epl)
+    print(f"epl_games -> {path} ({n} rows)")
+
+    db.init_db()
+    with db.get_conn() as conn:
+        db.upsert_games(conn, nfl.where(nfl.notna(), None).to_dict("records"))
+        db.upsert_games(conn, epl.where(epl.notna(), None).to_dict("records"))
+    print("SQLite cache rebuilt from the committed tables.")
+
+
+def cmd_spread_report(_args):
+    """How much of the edge threshold today's bid-ask spreads eat, per venue."""
+    for label, rows in (("NFL", snapshot_nfl_moneylines()), ("EPL", snapshot_epl_moneylines())):
+        costs = []
+        for r in rows:
+            bid, ask = r.get("yes_bid"), r.get("yes_ask")
+            if bid and ask and bid > 0 and ask > bid:
+                costs.append((ask / ((bid + ask) / 2) - 1) * 100)
+        if not costs:
+            print(f"{label}: no two-sided quotes")
+            continue
+        costs.sort()
+        over = sum(1 for c in costs if c >= 3.0)
+        print(f"{label}: n={len(costs)} median={statistics.median(costs):.2f}% "
+              f"p75={costs[int(len(costs) * 0.75)]:.2f}% max={costs[-1]:.2f}% "
+              f"| >=3.0% (the whole edge threshold): {over}/{len(costs)}")
+
+
 def cmd_backtest_nfl(args):
-    games = fetch_nfl_games(args.seasons)
+    games = _load_games("nfl_games", args.seasons, _nfl_season_labels,
+                        fetch_nfl_games, args.seasons)
     model = NflEloModel(use_mov_multiplier=args.mov)
     result = backtest_nfl(games, model, edge_threshold=args.edge_threshold / 100)
     print(json.dumps({k: v for k, v in result.items() if k != "bets"}, indent=2, default=str))
@@ -57,7 +128,8 @@ def cmd_backtest_nfl(args):
 
 
 def cmd_backtest_soccer(args):
-    games = fetch_soccer_games(args.league, args.seasons)
+    games = _load_games("epl_games", args.seasons, _epl_season_labels,
+                        fetch_soccer_games, args.league, args.seasons)
     model = SoccerEloModel()
     result = backtest_soccer(games, model, edge_threshold=args.edge_threshold / 100)
     print(json.dumps({k: v for k, v in result.items() if k != "bets"}, indent=2, default=str))
@@ -184,6 +256,15 @@ def cmd_ledger_summary(_args):
 def main():
     parser = argparse.ArgumentParser(prog="sportsedge")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("refresh-history")
+    p.add_argument("--nfl-seasons", nargs="+", type=int, default=list(range(2018, 2027)))
+    p.add_argument("--epl-seasons", nargs="+",
+                   default=["1920", "2021", "2122", "2223", "2324", "2425", "2526", "2627"])
+    p.set_defaults(func=cmd_refresh_history)
+
+    p = sub.add_parser("spread-report")
+    p.set_defaults(func=cmd_spread_report)
 
     p = sub.add_parser("ingest-nfl")
     p.add_argument("--seasons", nargs="+", type=int, required=True)

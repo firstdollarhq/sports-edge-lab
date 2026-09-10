@@ -15,9 +15,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from sportsedge.betting.edge import spread_cost_fraction
+
 # A 1-cent-wide book on a $1 contract is 1% of notional; 5c is where the
 # round-trip cost starts to swamp any edge we could plausibly detect.
 MAX_SPREAD = 0.05
+# ...and an absolute cap is the wrong SHAPE for a book's width. The same 2c
+# spread is 1.0% of a $1.00-ish contract and 14.3% of a $0.07 one, so a single
+# cent threshold is strict on favourites and nearly meaningless on longshots.
+# Measured on the live board 2026-09-10: relative width (ask/mid - 1) runs to a
+# median of 1.23% on NFL and 1.89% on EPL, with a long tail -- worst observed
+# was Sunderland at Man City, bid 0.06 / ask 0.08, at 14.3%, which passes every
+# absolute check above.
+#
+# NOTE ON WHAT THIS IS NOT. Because recommend.py already prices edges at the
+# ask, the cost of crossing is paid inside the edge number itself; this gate is
+# not a second deduction for it and must not be described as one. Its actual
+# job is as a proxy for two things a wide relative book implies: the de-vigged
+# "fair probability" we measure disagreement against is unreliable, and size is
+# unlikely to fill near the touch. So it is set to catch the pathological tail
+# only -- 0.40/0.42 (2.4%) is an ordinary market and must pass.
+MAX_SPREAD_COST = 0.05
 # Contracts resting on the side we would hit.
 MIN_SIZE = 50.0
 # Total traded interest in the market's lifetime.
@@ -36,7 +54,8 @@ class LiquidityVerdict:
 
 def check(row: dict, *, max_spread: float = MAX_SPREAD, min_size: float = MIN_SIZE,
           min_volume: float = MIN_VOLUME, min_price: float = MIN_PRICE,
-          max_price: float = MAX_PRICE) -> LiquidityVerdict:
+          max_price: float = MAX_PRICE,
+          max_spread_cost: float = MAX_SPREAD_COST) -> LiquidityVerdict:
     """Decide whether a snapshot row represents a tradeable price.
 
     `row` is a dict as produced by ingest.kalshi.snapshot_moneylines.
@@ -65,6 +84,13 @@ def check(row: dict, *, max_spread: float = MAX_SPREAD, min_size: float = MIN_SI
     volume = row.get("volume") or 0.0
     if volume < min_volume:
         return LiquidityVerdict(False, f"volume {volume:.0f} < {min_volume:.0f}")
+
+    # Relative cost of lifting the ask instead of trading at the mid. Checked
+    # last so the reason string reports the specific, quantified objection.
+    cost = spread_cost_fraction(bid, ask)
+    if cost is None or cost > max_spread_cost:
+        return LiquidityVerdict(
+            False, f"crossing the spread costs {cost:.1%} > {max_spread_cost:.1%}")
 
     return LiquidityVerdict(True)
 

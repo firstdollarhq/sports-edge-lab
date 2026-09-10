@@ -97,3 +97,47 @@ def latest_before(sport: str, market_ticker: str, cutoff: str) -> dict | None:
     if sub.empty:
         return None
     return sub.sort_values("fetched_at").iloc[-1].to_dict()
+
+
+# -- historical game tables ---------------------------------------------------
+#
+# Same durability argument as the odds snapshots above, weaker force: game
+# tables CAN be rebuilt from nflverse and football-data.co.uk, so losing them
+# costs time rather than information. They are committed anyway because a
+# backtest that silently re-downloads its own inputs on every run is a
+# backtest whose sample can change underneath a result you already published.
+
+PROCESSED_DIR = Path(__file__).parents[3] / "data" / "processed"
+
+
+def processed_path(name: str) -> Path:
+    return PROCESSED_DIR / f"{name}.csv"
+
+
+def write_processed(name: str, df: pd.DataFrame) -> tuple[Path, int]:
+    """Write a historical game table, merging with whatever is already there.
+
+    Keyed on game_id so re-ingesting an in-progress season fills in scores for
+    fixtures that were unplayed last time without duplicating the rows.
+    """
+    path = processed_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    if path.exists():
+        combined = pd.concat([pd.read_csv(path), df], ignore_index=True)
+        combined = combined.drop_duplicates(subset=["game_id"], keep="last")
+    else:
+        combined = df
+
+    combined = combined.sort_values(["season", "game_date", "game_id"])
+    combined.to_csv(path, index=False)
+    return path, len(combined)
+
+
+def read_processed(name: str) -> pd.DataFrame:
+    path = processed_path(name)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} not found -- run `python -m sportsedge.cli refresh-history` first"
+        )
+    return pd.read_csv(path)

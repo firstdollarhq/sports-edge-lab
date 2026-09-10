@@ -6,9 +6,10 @@ venv/
 .pytest_cache/
 data/*.db
 data/raw/*
-data/processed/*
 !data/raw/.gitkeep
-!data/processed/.gitkeep
+# data/processed/ is deliberately NOT ignored either: it holds the historical
+# game tables the backtests read. Committing them stops a published result
+# from resting on a sample that quietly re-downloads and shifts underneath it.
 # data/snapshots/ is deliberately NOT ignored: live odds cannot be
 # reconstructed after the fact, and the container is wiped between runs, so the
 # committed CSVs are the only durable record. See storage/snapshots.py.

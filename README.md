@@ -169,6 +169,18 @@ Entries record what worked, what didn't, and why — including negative
 results. **A few weeks of results is noise; the point is signal, not
 confirming a bias.**
 
+## Known-bad numbers (withdrawn)
+
+Every **NFL ROI figure** published before 2026-09-10 run 2 was computed with
+the within-season order scrambled: the ingest stored `week` as a string, so
+`"10"` sorted before `"2"` and each season ran 1, 10, 11 … 18, 19, 2, 20 …
+The model predicted week 2 from ratings that had absorbed weeks 10-18.
+Corrected 2018-2024 vanilla Elo is **-8.21% ROI, not -4.65%**. NFL log-loss
+figures moved by ~0.001 and are effectively unaffected; all EPL figures are
+unaffected and reproduce exactly. No adoption decision changes — nothing was
+live. Fixed in `ingest/nfl_stats.py` and `backtest/engine.py`, pinned by
+`tests/test_backtest_order.py`.
+
 ## Open questions / next steps
 
 - **Elo parameter tuning is exhausted.** 102 configurations were swept

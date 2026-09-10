@@ -25,7 +25,9 @@ from collections import defaultdict
 import pandas as pd
 
 from sportsedge.betting import liquidity
-from sportsedge.betting.edge import devig_two_way, devig_three_way, edge_pct, kelly_fraction
+from sportsedge.betting.edge import (
+    devig_two_way, devig_three_way, edge_fraction, kelly_fraction,
+)
 from sportsedge.models.live import NFL_MODEL_VERSION, SOCCER_MODEL_VERSION
 
 # Kalshi contracts pay $1, so paying `ask` for one is decimal odds of 1/ask.
@@ -133,7 +135,7 @@ def _maybe_bet(*, row: dict, sport: str, league: str, selection: str, model_prob
     dec = _decimal_odds(row.get("yes_ask"))
     if dec is None:
         return []
-    e = edge_pct(model_prob, dec)
+    e = edge_fraction(model_prob, dec)
     if e < edge_threshold:
         return []
     return [{
@@ -152,7 +154,7 @@ def _maybe_bet(*, row: dict, sport: str, league: str, selection: str, model_prob
         "model_version": model_version,
         "price_ask": row["yes_ask"],
         "market_odds_decimal": dec,
-        "edge_pct": e * 100,
+        "edge_pct": e * 100,   # ledger column is percent; e is a fraction
         # Divergence from the de-vigged market price is the honest description
         # of what we are claiming: "the market is wrong by this much".
         "disagreement_pp": (model_prob - fair_prob) * 100,
