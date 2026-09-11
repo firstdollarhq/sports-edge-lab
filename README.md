@@ -5,20 +5,29 @@ A research project testing predictive sports models against real market odds.
 to find a real, validated edge, not to confirm a bias. See `journal/` for an
 honest, dated log of what was tried and what happened.
 
-## Status (2026-09-11, scheduled run #3)
+## Status (2026-09-11, scheduled run #4)
 
-- **0 live bets. 1 settled shadow bet (a win), 35 pending, 30 void.** The one
-  settled bet is SF @ LA (SF won 27-7) at +11.06% edge. Its CLV is 0.0% and
-  that number is **vacuous** -- the last snapshot was 7.5h pre-kickoff, so
-  entry and "closing" price are the same captured row. One bet is not a win
-  rate.
-- **150 model configurations backtested across both sports. None beat the
-  market.** Nothing adopted, `live_enabled` is `false` everywhere. Elo
-  parameter tuning is exhausted; the remaining gap is information, not
-  parameters.
-- Two lookahead bugs found and fixed so far, both the same shape: a column
-  whose name asserted a meaning it did not hold, feeding the one function that
-  promised no leakage. See "Known-bad numbers" below.
+- **0 live bets. 1 settled shadow bet (a win), 70 pending, 30 void.** The one
+  settled bet is SF @ LA at +11.06% edge; its CLV is 0.0% and that number is
+  **vacuous** (last snapshot was 7.5h pre-kickoff). One bet is not a win rate.
+- **The betting rule, not the rating engine, is the main defect.**
+  Unconditionally NFL Elo is roughly calibrated. Conditional on a side being
+  *bet* it overstates its win probability by **13.7 points**, in every
+  probability bucket; on sides it *passes* it understates by 9.3. That is the
+  winner's curse: the rule stakes money precisely where the model disagrees
+  with a more accurate forecast. See `cli selection-audit`.
+- **Elo carries no information the closing line lacks.** Blending
+  `w*model + (1-w)*market` is optimised at **w = 0** for NFL, with log-loss
+  monotonically worse in w; EPL lands on w = 0 for 5 of 6 holdout seasons and
+  the 6th improves by 0.0002, CI [-0.0021, +0.0017]. A parameter sweep can
+  luck into a good score; this cannot.
+- **150 model configurations backtested. None beat the market.** Nothing
+  adopted, `live_enabled` is `false` everywhere.
+- **EPL's +8.27% ROI is retired.** Re-run with each season as holdout it is
+  1 of 6 positive; pooled **-8.30%**, sd 9.33pp. It was the best of six draws
+  from a distribution centred near -8%.
+- Four bugs of one shape found so far, all a value that was not what the
+  surrounding code assumed. See "Known-bad numbers" below.
 
 ## Why these data sources
 
@@ -43,6 +52,8 @@ src/sportsedge/
   models/       elo.py (rating engines), calibration.py (soccer 3-way outcome calibration)
                 live.py (current-strength ratings for pricing today's games)
   backtest/     engine.py (walk-forward backtest, no lookahead), metrics.py
+                sweep.py (parameter grid vs the closing line)
+                selection.py (winner's-curse audit + model-vs-market blend)
   betting/      edge.py (de-vig, EV, Kelly), ledger.py (bets/ledger.csv)
                 liquidity.py (is this quote fillable?), recommend.py (model vs market)
                 settle.py (resolve bets, compute CLV)
@@ -133,7 +144,13 @@ Run it yourself:
 pip install -e ".[dev]"
 python -m sportsedge.cli backtest-nfl --seasons 2018 2019 2020 2021 2022 2023 2024
 python -m sportsedge.cli backtest-soccer --league E0 --seasons 1920 2021 2122 2223 2324 2425
+python -m sportsedge.cli selection-audit    # is the model wrong, or the bet rule?
 ```
+
+`selection-audit` answers the two questions a parameter sweep cannot: whether
+the model's errors are concentrated in the sides it chooses to bet (the
+winner's curse), and whether any blend weight on the model beats the closing
+line it is betting into.
 
 ## Setup
 
@@ -190,6 +207,23 @@ when the bet won. Nothing published depended on it: no candlestick CLV had been
 computed and no snapshot contains an in-play row. Fixed by
 `ingest/kickoff.py`; pinned by `tests/test_kickoff.py`.
 
+**EPL's +8.27% ROI -- retired 2026-09-11 run 4.** It was reported on the
+2025-26 holdout. Re-run with each season in turn as the holdout, the same
+model and protocol give -11.76 / -6.57 / -12.19 / -19.35 / -5.12 / **+8.27**:
+1 of 6 positive, pooled **-8.30%**, sd 9.33pp. The figure is the best of six
+draws from a distribution centred near -8%, and its season has the
+second-worst log-loss in the set. Never presented as validated; now treated as
+withdrawn rather than merely uncelebrated.
+
+**The committed tables were rewriting themselves on every read -- fixed, no
+number affected.** pandas' default CSV float parser is not correctly rounded:
+it read a stored `1.3690036900369003` back as `...005`. 585 of 2,499 NFL rows
+drifted in the last bit on every refresh with no upstream change behind them.
+Irrelevant at 1e-16, but it made `git diff` useless on the data (six genuine
+line moves were invisible among 2,499 "changed" rows) and it meant reading the
+irreplaceable snapshot store altered it. All reads now use
+`float_precision="round_trip"`; pinned by `tests/test_snapshots.py`.
+
 **Run 1's 102-config sweep is not reproducible.** Its script was never
 committed and a faithful reconstruction does not match it (best 0.6396 here vs
 0.6459 reported). The no-adoption conclusion is unaffected -- the gap to the
@@ -211,21 +245,37 @@ mattered more than the ROI bug that preceded it.
 
 ## Open questions / next steps
 
-- **Elo parameter tuning is exhausted.** 102 configurations were swept
-  out-of-sample across both sports (48 NFL, 54 EPL) and *none* beat the market.
-  The remaining gap is information the market has and Elo doesn't. The next
-  model direction is adding information — QB-change/injury signals for NFL are
-  the highest-value candidate — not retuning what's there.
-- The two sports fail for *different* reasons and shouldn't get the same fix:
-  NFL is under-dispersed (model sd 0.100 vs market 0.183) and overrates
-  underdogs; EPL's dispersion is already fine (0.207 vs 0.192) and its gap is
-  purely informational.
-- ~~Kalshi liquidity filter~~ — **done** (`betting/liquidity.py`). It currently
-  rejects 1/62 NFL contracts but 22/60 EPL contracts, almost all on thin volume.
-- **Needs the owner (money):** The Odds API Professional (~$29/mo) for a second,
-  sportsbook-style price to compare against Kalshi's exchange price.
-- **Needs the owner (account):** football-data.org's free tier requires an API
-  key that a human must create.
-- Snapshot cadence: CLV requires a captured pre-kickoff price, so a once-daily
-  snapshot will miss closing prices for games starting between runs. Run
-  `snapshot-odds` several times a day, or at minimum shortly before each slate.
+- **The selection gap is the thing to attack, not the ratings.** A model need
+  not beat the market on every game to be bettable -- it needs to be right
+  about *which* games it disagrees on. Nothing measured so far suggests Elo
+  is. Elo parameter tuning is exhausted (150 configs, none beat the market)
+  and retuning cannot reach a selection bias in any case.
+- **Do not "fix" the selection gap with a price or edge filter without a real
+  test.** Every price bucket in the NFL backtest is ROI-negative (best
+  -3.90% at market >=0.50, CI [-18.9, +11.1]). A filter that improves
+  backtest ROI here is selecting on noise.
+- **Beware the blend sweep's own bait.** It reports +10.19% ROI at w=0.05 --
+  on 32 bets, CI [-73.9, +94.3], from a weight log-loss says is worse than
+  betting nothing. It regenerates on every run. `summarize_blend` prints such
+  rows with their log-loss delta attached for this reason.
+- **Build the Kalshi-venue backtest.** Still the highest-value work left and
+  still not done. `backtest/engine.py`'s docstring points at
+  `backtest.kalshi_engine`, which does not exist. Everything measured is
+  model-vs-sportsbook; we would trade on an exchange.
+- **Audit the remaining joins and sort keys.** Four bugs of the same shape
+  now. Every column whose name asserts a semantic (`*_time`, `*_date`,
+  `week`, `season`) deserves an explicit check that it holds what the name
+  claims -- as does every "last season" that might be in progress.
+- The two sports fail for *different* reasons: NFL is under-dispersed
+  (model sd 0.132 vs market 0.187); EPL's dispersion is already fine.
+- ~~Kalshi liquidity filter~~ -- **done** (`betting/liquidity.py`). The 5%
+  relative-width gate remains unvalidated against realized fill quality, and
+  it has now voided real bets.
+- **Needs the owner (money):** The Odds API Professional (~$29/mo) for a
+  sportsbook-style price to compare against Kalshi's exchange price. Rejected
+  on the merits in run 2; listed here as a standing option, not an open ask.
+- ~~Needs the owner (account): football-data.org key~~ -- **not needed.**
+  football-data.co.uk already ships kickoff times.
+- Snapshot cadence: CLV requires a captured pre-kickoff price, so run
+  `snapshot-odds` several times a day, or at minimum shortly before each
+  slate. A missed window is permanently missing data.
