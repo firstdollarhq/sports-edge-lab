@@ -60,8 +60,16 @@ def _chronological(games: pd.DataFrame, seasons) -> pd.DataFrame:
 
 
 def run_nfl_config(games: pd.DataFrame, cfg: NflConfig, *, test_seasons=DEFAULT_TEST_SEASONS,
-                   edge_threshold: float = 0.03) -> dict:
-    """One configuration, walk-forward, scored only on `test_seasons`."""
+                   edge_threshold: float = 0.03, collect_sides: bool = False) -> dict:
+    """One configuration, walk-forward, scored only on `test_seasons`.
+
+    With `collect_sides`, also returns every priced side under key "sides" --
+    not just the ones that cleared the threshold. Analyses that need to compare
+    what the model BET against what it PASSED (see backtest.selection) run off
+    this same loop deliberately: run 1's sweep lived in an uncommitted scratch
+    file and could never be reconciled afterwards, and a second copy of the
+    walk-forward is exactly how that happens again.
+    """
     test = {str(s) for s in test_seasons}
     model = NflEloModel(k=cfg.k, home_advantage=cfg.home_advantage,
                         use_mov_multiplier=cfg.use_mov)
@@ -70,6 +78,7 @@ def run_nfl_config(games: pd.DataFrame, cfg: NflConfig, *, test_seasons=DEFAULT_
     clf, fitted_for = None, None
     y_true, p_pred, bets = [], [], []
     mk_y, mk_p = [], []
+    sides = []
     prev_season = None
 
     for _, g in games.iterrows():
@@ -100,14 +109,19 @@ def run_nfl_config(games: pd.DataFrame, cfg: NflConfig, *, test_seasons=DEFAULT_
                 fair_home, _ = devig_two_way(1 / ho, 1 / ao)
                 mk_y.append(home_won)
                 mk_p.append(fair_home)
-                for prob, odds, won, fair in (
-                    (p_home, ho, g["result"] == "H", fair_home),
-                    (1 - p_home, ao, g["result"] == "A", 1 - fair_home),
+                for side, prob, odds, won, fair in (
+                    ("home", p_home, ho, g["result"] == "H", fair_home),
+                    ("away", 1 - p_home, ao, g["result"] == "A", 1 - fair_home),
                 ):
                     e = edge_fraction(prob, odds)
                     if e >= edge_threshold:
                         bets.append({"model_prob": prob, "decimal_odds": odds, "won": won,
                                      "fair_market_prob": fair, "edge_frac": e})
+                    if collect_sides:
+                        sides.append({"season": season, "game_id": g["game_id"], "side": side,
+                                      "model_prob": prob, "decimal_odds": odds, "won": won,
+                                      "fair_market_prob": fair, "edge_frac": e,
+                                      "flagged": e >= edge_threshold})
 
         hist_diff.append(diff)
         hist_y.append(home_won)
@@ -116,6 +130,7 @@ def run_nfl_config(games: pd.DataFrame, cfg: NflConfig, *, test_seasons=DEFAULT_
     roi = simulate_flat_stake_roi(bets)
     ci = roi["roi_ci95_pct"] or (None, None)
     return {
+        **({"sides": sides} if collect_sides else {}),
         **asdict(cfg),
         "n_games": len(y_true),
         "log_loss": log_loss(y_true, p_pred),

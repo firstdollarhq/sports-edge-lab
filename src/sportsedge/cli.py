@@ -7,6 +7,7 @@
     python -m sportsedge.cli backtest-nfl --seasons 2020 2021 2022 2023 2024
     python -m sportsedge.cli backtest-soccer --league E0 --seasons 2223 2324 2425
     python -m sportsedge.cli sweep-nfl                # parameter grid vs the closing line
+    python -m sportsedge.cli selection-audit          # is the model wrong, or the bet rule?
     python -m sportsedge.cli kalshi-nfl
     python -m sportsedge.cli kalshi-epl
     python -m sportsedge.cli snapshot-odds            # capture + persist live odds
@@ -29,7 +30,7 @@ from sportsedge.ingest.kalshi import snapshot_moneylines, snapshot_nfl_moneyline
 from sportsedge.models.elo import NflEloModel, SoccerEloModel
 from sportsedge.models.live import build_nfl_model, build_soccer_model
 from sportsedge.backtest.engine import backtest_nfl, backtest_soccer
-from sportsedge.backtest import sweep
+from sportsedge.backtest import sweep, selection
 from sportsedge.betting import liquidity, recommend as recommend_mod, settle as settle_mod
 from sportsedge.betting import ledger as ledger_mod
 from sportsedge.betting.ledger import summarize
@@ -118,6 +119,44 @@ def cmd_sweep_nfl(args):
     if args.out:
         grid.to_csv(args.out, index=False)
         print(f"\nfull grid -> {args.out}")
+
+
+def cmd_selection_audit(args):
+    """Is the model wrong, or is the betting rule picking out its errors?
+
+    Prints, per sport: calibration on the sides the rule bets vs the sides it
+    passes, then the blend sweep against the de-vigged closing line.
+    """
+    for sport in args.sports:
+        sides = selection.nfl_sides() if sport == "nfl" else selection.epl_sides()
+        audit = selection.selection_audit(sides)
+        print(f"\n{'=' * 68}\n{sport.upper()}  --  {audit['n_sides']} priced sides, "
+              f"{audit['n_flagged']} flagged ({audit['flagged_rate_pct']:.1f}%)\n{'=' * 68}")
+
+        print(f"\n{'model prob':>12} {'n':>6} {'claimed':>9} {'actual':>9} {'gap':>8}   (all sides)")
+        for r in audit["all"]["by_bucket"]:
+            print(f"{r['bucket']:>12} {r['n']:6d} {r['claimed']:9.3f} {r['actual']:9.3f} {r['gap']:+8.3f}")
+
+        for label in ("flagged", "passed"):
+            sub = audit[label]
+            if not sub.get("n"):
+                continue
+            print(f"\n{'model prob':>12} {'n':>6} {'claimed':>9} {'actual':>9} {'gap':>8}   ({label})")
+            for r in sub["by_bucket"]:
+                print(f"{r['bucket']:>12} {r['n']:6d} {r['claimed']:9.3f} {r['actual']:9.3f} {r['gap']:+8.3f}")
+            print(f"{'OVERALL':>12} {sub['n']:6d} {sub['claimed']:9.3f} {sub['actual']:9.3f} {sub['gap']:+8.3f}")
+
+        print(f"\nselection gap (flagged minus passed): {audit['selection_gap']:+.3f}")
+        print("  negative => the rule bets the sides the model gets wrong (winner's curse)")
+
+        blend = selection.blend_sweep(sides)
+        print(f"\n{'w':>6} {'log-loss':>10} {'vs mkt':>9} {'n_bets':>7} {'ROI':>9} {'95% CI':>20}")
+        for r in blend.itertuples():
+            roi = f"{r.roi_pct:+8.2f}%" if r.roi_pct is not None else f"{'--':>9}"
+            ci = (f"[{r.roi_ci_lo:+6.1f},{r.roi_ci_hi:+6.1f}]"
+                  if r.roi_ci_lo is not None else "")
+            print(f"{r.w:6.2f} {r.log_loss:10.4f} {r.vs_market:+9.4f} {r.n_bets:7d} {roi} {ci:>20}")
+        print("\n" + json.dumps(selection.summarize_blend(blend, sides), indent=2, default=float))
 
 
 def cmd_spread_report(_args):
@@ -293,6 +332,10 @@ def main():
     p.add_argument("--epl-seasons", nargs="+",
                    default=["1920", "2021", "2122", "2223", "2324", "2425", "2526", "2627"])
     p.set_defaults(func=cmd_refresh_history)
+
+    p = sub.add_parser("selection-audit")
+    p.add_argument("--sports", nargs="+", default=["nfl", "soccer"])
+    p.set_defaults(func=cmd_selection_audit)
 
     p = sub.add_parser("spread-report")
     p.set_defaults(func=cmd_spread_report)
