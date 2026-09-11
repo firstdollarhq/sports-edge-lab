@@ -7,6 +7,10 @@ CREATE TABLE IF NOT EXISTS games (
     season TEXT NOT NULL,
     week TEXT,
     game_date TEXT NOT NULL,
+    -- True kickoff in UTC, from the stats source (nflverse gameday+gametime,
+    -- football-data.co.uk Date+Time). The only trustworthy pre-game cutoff in
+    -- the project: Kalshi's timestamps all land after the ball is snapped.
+    kickoff_utc TEXT,
     home_team TEXT NOT NULL,
     away_team TEXT NOT NULL,
     home_score INTEGER,
@@ -39,7 +43,8 @@ CREATE TABLE IF NOT EXISTS market_snapshots (
     game_id TEXT,                     -- fk to games.game_id once matched
     home_team TEXT,
     away_team TEXT,
-    commence_time TEXT,
+    expiration_time TEXT,
+    kickoff_utc TEXT,
     selection TEXT NOT NULL,          -- team name as printed by the venue, or 'Tie'
     yes_bid REAL,
     yes_ask REAL,

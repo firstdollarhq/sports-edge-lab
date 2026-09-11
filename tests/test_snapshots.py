@@ -8,7 +8,7 @@ def _row(ticker="KXNFLGAME-26SEP21NYGLAR-NYG", fetched="2026-09-10T12:00:00+00:0
         "sport": "nfl", "league": "NFL",
         "event_ticker": "KXNFLGAME-26SEP21NYGLAR", "market_ticker": ticker,
         "game_id": None, "home_team": "LA", "away_team": "NYG",
-        "commence_time": "2026-09-22T03:15:00Z", "selection": "away",
+        "expiration_time": "2026-09-22T03:15:00Z", "selection": "away",
         "yes_bid": 0.17, "yes_ask": ask, "implied_prob_mid": 0.175, "spread": 0.01,
         "yes_bid_size": 1000.0, "yes_ask_size": 700.0, "volume": 6000.0,
         "volume_24h": 1200.0, "open_interest": 5000.0, "status": "active",

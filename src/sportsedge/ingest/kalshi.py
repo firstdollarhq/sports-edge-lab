@@ -127,7 +127,11 @@ def snapshot_moneylines(sport: str) -> list[dict]:
             "game_id": None,          # resolved at join time against the stats source
             "home_team": teams["home_team"],
             "away_team": teams["away_team"],
-            "commence_time": m.get("expected_expiration_time"),
+            # NOT kickoff. Kalshi has no kickoff field: this and
+            # `occurrence_datetime` are identical and both land 3-6h AFTER the
+            # game starts. Named for what it is so nothing treats it as a
+            # pre-game cutoff again -- see ingest/kickoff.py.
+            "expiration_time": m.get("expected_expiration_time"),
             "selection": selection,   # 'home' | 'away' | 'draw'
             "yes_bid": bid,
             "yes_ask": ask,
@@ -196,7 +200,15 @@ def fetch_candlesticks(series_ticker: str, market_ticker: str, start_ts: int,
 
 def closing_quote_before(series_ticker: str, market_ticker: str, kickoff: datetime,
                          lookback_hours: int = 72) -> dict | None:
-    """Last two-sided quote strictly BEFORE kickoff -- not before settlement."""
+    """Last two-sided quote strictly BEFORE kickoff -- not before settlement.
+
+    `kickoff` must be the TRUE kickoff, from `ingest.kickoff.resolve_kickoff()`.
+    Passing Kalshi's `expected_expiration_time` here defeats the whole point of
+    the function: that timestamp is 3-6h late, so the "last quote before the
+    cut" is a price from inside the game. On SF @ LA (2026-09-10) that returned
+    bid 0.98 / ask 0.99 -- the market had already priced the result -- against
+    an entry of 0.36.
+    """
     end_ts = int(kickoff.timestamp())
     start_ts = int((kickoff - timedelta(hours=lookback_hours)).timestamp())
     candles = fetch_candlesticks(series_ticker, market_ticker, start_ts, end_ts)

@@ -25,6 +25,7 @@ from collections import defaultdict
 import pandas as pd
 
 from sportsedge.betting import liquidity
+from sportsedge.ingest import kickoff
 from sportsedge.betting.edge import (
     devig_two_way, devig_three_way, edge_fraction, kelly_fraction,
 )
@@ -32,6 +33,23 @@ from sportsedge.models.live import NFL_MODEL_VERSION, SOCCER_MODEL_VERSION
 
 # Kalshi contracts pay $1, so paying `ask` for one is decimal odds of 1/ask.
 MIN_ASK = 0.01
+
+# Version of the PRICING pipeline -- everything between a model's probability
+# and a logged bet: the liquidity gate, the de-vig, ask-vs-mid, the edge
+# formula. It is versioned separately from the model because a change here
+# changes what gets bet and at what price while the model is untouched.
+#
+# That gap bit once already. The 2026-09-10 liquidity fix voided and re-priced
+# the NFL rows because NFL's model version happened to move (v1 -> v2), but
+# left 12 EPL rows priced under the superseded gate -- two of them on a
+# contract the new gate rejects, carrying the two largest EPL "edges" in the
+# ledger (+206% and +64% on a book 7.7% wide). Keyed on model version alone,
+# nothing could have caught that.
+#
+# Bump this whenever pricing behaviour changes, and re-price open bets.
+#   p1: pre-2026-09-11. Liquidity gate without the relative-width check.
+#   p2: relative-width gate (5%), ask pricing, kickoff-correct CLV cutoff.
+PRICING_VERSION = "p2"
 
 
 def _decimal_odds(ask: float) -> float | None:
@@ -129,6 +147,16 @@ def recommend_soccer(snapshot_rows: list[dict], model, calibrator, *,
     return out
 
 
+def _kickoff_iso(sport: str, row: dict) -> str | None:
+    """Best-effort true kickoff at recommendation time; None is acceptable."""
+    try:
+        ko = kickoff.resolve_kickoff(sport, row.get("home_team"), row.get("away_team"),
+                                     row.get("expiration_time"))
+    except Exception:
+        return None
+    return None if ko is None else ko.isoformat()
+
+
 def _maybe_bet(*, row: dict, sport: str, league: str, selection: str, model_prob: float,
                fair_prob: float, model_version: str, edge_threshold: float,
                kelly_multiplier: float, event_ticker: str) -> list[dict]:
@@ -146,7 +174,11 @@ def _maybe_bet(*, row: dict, sport: str, league: str, selection: str, model_prob
         "matchup": f"{row['away_team']} @ {row['home_team']}",
         "home_team": row["home_team"],
         "away_team": row["away_team"],
-        "commence_time": row.get("commence_time"),
+        # Kalshi's expiration (post-game), kept only as a coarse anchor for
+        # matching the fixture. `kickoff_utc` is the real thing, and is None
+        # until the stats source publishes the fixture -- settlement fills it.
+        "expiration_time": row.get("expiration_time"),
+        "kickoff_utc": _kickoff_iso(sport, row),
         "market": "moneyline",
         "selection": selection,
         "model_prob": model_prob,
@@ -154,6 +186,7 @@ def _maybe_bet(*, row: dict, sport: str, league: str, selection: str, model_prob
         "model_version": model_version,
         "price_ask": row["yes_ask"],
         "market_odds_decimal": dec,
+        "pricing_version": PRICING_VERSION,
         "edge_pct": e * 100,   # ledger column is percent; e is a fraction
         # Divergence from the de-vigged market price is the honest description
         # of what we are claiming: "the market is wrong by this much".

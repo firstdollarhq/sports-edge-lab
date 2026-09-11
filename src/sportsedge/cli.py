@@ -6,6 +6,7 @@
     python -m sportsedge.cli ingest-soccer --league E0 --seasons 2324 2425
     python -m sportsedge.cli backtest-nfl --seasons 2020 2021 2022 2023 2024
     python -m sportsedge.cli backtest-soccer --league E0 --seasons 2223 2324 2425
+    python -m sportsedge.cli sweep-nfl                # parameter grid vs the closing line
     python -m sportsedge.cli kalshi-nfl
     python -m sportsedge.cli kalshi-epl
     python -m sportsedge.cli snapshot-odds            # capture + persist live odds
@@ -28,6 +29,7 @@ from sportsedge.ingest.kalshi import snapshot_moneylines, snapshot_nfl_moneyline
 from sportsedge.models.elo import NflEloModel, SoccerEloModel
 from sportsedge.models.live import build_nfl_model, build_soccer_model
 from sportsedge.backtest.engine import backtest_nfl, backtest_soccer
+from sportsedge.backtest import sweep
 from sportsedge.betting import liquidity, recommend as recommend_mod, settle as settle_mod
 from sportsedge.betting import ledger as ledger_mod
 from sportsedge.betting.ledger import summarize
@@ -98,6 +100,24 @@ def cmd_refresh_history(args):
         db.upsert_games(conn, nfl.where(nfl.notna(), None).to_dict("records"))
         db.upsert_games(conn, epl.where(epl.notna(), None).to_dict("records"))
     print("SQLite cache rebuilt from the committed tables.")
+
+
+def cmd_sweep_nfl(args):
+    """Sweep the NFL Elo grid and report it against the de-vigged closing line."""
+    grid = sweep.sweep_nfl(seasons=tuple(args.seasons),
+                           test_seasons=tuple(args.test_seasons),
+                           edge_threshold=args.edge_threshold / 100)
+    summary = sweep.summarize_sweep(grid)
+    print(json.dumps(summary, indent=2, default=float))
+
+    cols = ["k", "home_advantage", "use_mov", "calibrate", "log_loss",
+            "n_bets", "roi_pct", "roi_ci_lo", "roi_ci_hi", "roi_significant"]
+    print("\n-- best 10 by log-loss --")
+    print(grid.head(10)[cols].to_string(index=False))
+
+    if args.out:
+        grid.to_csv(args.out, index=False)
+        print(f"\nfull grid -> {args.out}")
 
 
 def cmd_spread_report(_args):
@@ -212,7 +232,8 @@ def cmd_recommend(args):
         if not args.dry_run:
             seen = ledger_mod.existing_keys()
             for r in recs:
-                if (r["market_ticker"], r["model_version"]) in seen:
+                if (r["market_ticker"], r["model_version"],
+                        r.get("pricing_version")) in seen:
                     skipped += 1
                     continue
                 ledger_mod.add_bet(
@@ -224,7 +245,9 @@ def cmd_recommend(args):
                     kelly_fraction=r["kelly_fraction"], mode=mode,
                     market_ticker=r["market_ticker"],
                     market_fair_prob=r["market_fair_prob"],
-                    commence_time=r["commence_time"],
+                    expiration_time=r.get("expiration_time"),
+                    kickoff_utc=r.get("kickoff_utc"),
+                    pricing_version=r.get("pricing_version"),
                     notes="" if live else "model not cleared by backtest; shadow only",
                 )
                 logged += 1
@@ -288,6 +311,14 @@ def main():
     p.add_argument("--edge-threshold", type=float, default=3.0, help="percent")
     p.add_argument("--mov", action="store_true", help="use margin-of-victory K scaling")
     p.set_defaults(func=cmd_backtest_nfl)
+
+    p = sub.add_parser("sweep-nfl", help="NFL parameter grid vs the closing line")
+    p.add_argument("--seasons", nargs="+", type=int, default=list(sweep.DEFAULT_SEASONS))
+    p.add_argument("--test-seasons", nargs="+", type=int,
+                   default=list(sweep.DEFAULT_TEST_SEASONS))
+    p.add_argument("--edge-threshold", type=float, default=3.0, help="percent")
+    p.add_argument("--out", default=None, help="write the full grid to this CSV")
+    p.set_defaults(func=cmd_sweep_nfl)
 
     p = sub.add_parser("backtest-soccer")
     p.add_argument("--league", default="E0")

@@ -25,7 +25,7 @@ SNAPSHOT_ROOT = Path(__file__).parents[3] / "data" / "snapshots"
 
 COLUMNS = [
     "sport", "league", "event_ticker", "market_ticker", "game_id",
-    "home_team", "away_team", "commence_time", "selection",
+    "home_team", "away_team", "expiration_time", "selection",
     "yes_bid", "yes_ask", "implied_prob_mid", "spread",
     "yes_bid_size", "yes_ask_size", "volume", "volume_24h", "open_interest",
     "status", "source", "fetched_at",
@@ -38,6 +38,21 @@ _DEDUPE_KEY = ["market_ticker", "source", "fetched_minute"]
 
 def _path_for(sport: str, day: str) -> Path:
     return SNAPSHOT_ROOT / sport / f"{day}.csv"
+
+
+def _read_csv(path) -> pd.DataFrame:
+    """Read a snapshot CSV, normalising the pre-2026-09-11 column name.
+
+    Snapshots written before then stored Kalshi's `expected_expiration_time`
+    in a column called `commence_time`, which is 3-6h after kickoff and was
+    never a commencement of anything. The files are the project's one
+    irreplaceable asset so they are not rewritten; the name is corrected on
+    the way in instead.
+    """
+    df = pd.read_csv(path)
+    if "commence_time" in df.columns and "expiration_time" not in df.columns:
+        df = df.rename(columns={"commence_time": "expiration_time"})
+    return df
 
 
 def append_snapshot(rows: list[dict], *, sport: str, now: datetime | None = None) -> dict:
@@ -59,7 +74,7 @@ def append_snapshot(rows: list[dict], *, sport: str, now: datetime | None = None
             new[col] = None
     new = new[COLUMNS]
 
-    combined = pd.concat([pd.read_csv(path), new], ignore_index=True) if path.exists() else new
+    combined = pd.concat([_read_csv(path), new], ignore_index=True) if path.exists() else new
 
     combined["fetched_minute"] = combined["fetched_at"].astype(str).str.slice(0, 16)
     before = len(combined)
@@ -77,7 +92,7 @@ def load_snapshots(sport: str | None = None) -> pd.DataFrame:
     roots = [SNAPSHOT_ROOT / sport] if sport else (
         [p for p in SNAPSHOT_ROOT.iterdir() if p.is_dir()] if SNAPSHOT_ROOT.exists() else []
     )
-    frames = [pd.read_csv(f) for root in roots if root.exists() for f in sorted(root.glob("*.csv"))]
+    frames = [_read_csv(f) for root in roots if root.exists() for f in sorted(root.glob("*.csv"))]
     if not frames:
         return pd.DataFrame(columns=COLUMNS)
     return pd.concat(frames, ignore_index=True)

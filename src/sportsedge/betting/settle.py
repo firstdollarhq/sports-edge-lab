@@ -23,6 +23,7 @@ from __future__ import annotations
 import pandas as pd
 
 from sportsedge.betting import ledger as ledger_mod
+from sportsedge.ingest import kickoff as kickoff_mod
 from sportsedge.ingest.kalshi import fetch_settled_results
 from sportsedge.storage import snapshots
 
@@ -30,6 +31,29 @@ from sportsedge.storage import snapshots
 def _clv_pct(placed_odds: float, closing_odds: float) -> float:
     """Positive when we got a better price than the close."""
     return (placed_odds / closing_odds - 1) * 100
+
+
+def _teams_from_matchup(bet: pd.Series) -> tuple[str, str] | None:
+    """('home', 'away') for a bet, from the stored matchup 'AWAY @ HOME'."""
+    matchup = bet.get("matchup")
+    if not matchup or " @ " not in str(matchup):
+        return None
+    away, home = str(matchup).split(" @ ", 1)
+    return home.strip(), away.strip()
+
+
+def _kickoff_for(bet: pd.Series) -> str | None:
+    """True kickoff for a bet, ISO 8601, or None if the stats source lacks it."""
+    stored = bet.get("kickoff_utc")
+    if stored and not pd.isna(stored):
+        return str(stored)
+
+    teams = _teams_from_matchup(bet)
+    if teams is None:
+        return None
+    ko = kickoff_mod.resolve_kickoff(bet.get("sport"), teams[0], teams[1],
+                                     bet.get("expiration_time"))
+    return None if ko is None else ko.isoformat()
 
 
 def settle_pending(*, sports: tuple[str, ...] = ("nfl", "soccer"),
@@ -61,6 +85,7 @@ def settle_pending(*, sports: tuple[str, ...] = ("nfl", "soccer"),
             continue
 
         status = "won" if results[ticker] == "yes" else "lost"
+        resolved_kickoff = _kickoff_for(bet)
         closing = _closing_odds(bet)
         clv = None
         if closing is not None and bet.get("market_odds_decimal"):
@@ -71,12 +96,18 @@ def settle_pending(*, sports: tuple[str, ...] = ("nfl", "soccer"),
             "bet_id": bet["bet_id"], "matchup": bet.get("matchup"),
             "selection": bet.get("selection"), "status": status,
             "closing_odds_decimal": closing, "clv_pct": clv,
+            "kickoff_utc": resolved_kickoff,
+            "clv_missing_reason": None if clv is not None else (
+                "no kickoff in stats source" if resolved_kickoff is None
+                else "no snapshot captured before kickoff"),
         })
         settled += 1
 
         if not dry_run:
             df.loc[idx, "status"] = status
             df.loc[idx, "result_logged_at"] = pd.Timestamp.now(tz="UTC").isoformat()
+            if resolved_kickoff is not None:
+                df.loc[idx, "kickoff_utc"] = resolved_kickoff
             if closing is not None:
                 df.loc[idx, "closing_odds_decimal"] = closing
             if clv is not None:
@@ -90,10 +121,24 @@ def settle_pending(*, sports: tuple[str, ...] = ("nfl", "soccer"),
 
 
 def _closing_odds(bet: pd.Series) -> float | None:
-    """Last observed pre-kickoff ask for this contract, as decimal odds."""
+    """Last observed pre-kickoff ask for this contract, as decimal odds.
+
+    The cutoff is the TRUE kickoff from the stats source, never Kalshi's
+    expiration. The expiration lands 3-6h after the ball is snapped, so using
+    it admitted in-play quotes -- and an in-play quote is a price that already
+    knows the result, which turns CLV into a restatement of win/loss dressed
+    up as evidence of skill.
+
+    If the kickoff cannot be resolved we return None and the bet settles with
+    no CLV. That is the intended behaviour: a missing number is recoverable,
+    a fabricated one is not.
+    """
     ticker, sport = bet.get("market_ticker"), bet.get("sport")
-    cutoff = bet.get("commence_time")
-    if not ticker or not sport or not cutoff:
+    if not ticker or not sport:
+        return None
+
+    cutoff = _kickoff_for(bet)
+    if cutoff is None:
         return None
     row = snapshots.latest_before(sport, ticker, str(cutoff))
     if not row:

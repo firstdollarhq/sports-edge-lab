@@ -21,7 +21,18 @@ COLUMNS = [
     "mode",              # 'shadow' (model not validated) | 'live' (paper bet)
     "market_ticker",     # Kalshi contract, for settlement + CLV lookup
     "market_fair_prob",  # de-vigged market probability at recommendation time
-    "commence_time",
+    # Kalshi's market expiration -- 3-6h AFTER kickoff, useful only as a coarse
+    # anchor for matching the fixture. Was called `commence_time` until
+    # 2026-09-11, under which name it was used as the pre-game cutoff for
+    # closing-price lookups and quietly admitted in-play prices into CLV.
+    "expiration_time",
+    # The real kickoff, resolved from the stats source. None means "unknown",
+    # and an unknown kickoff means no CLV -- never a fallback to expiry.
+    "kickoff_utc",
+    # Which pricing pipeline produced this row (see recommend.PRICING_VERSION).
+    # Tracked alongside model_version so that a change to the gate/de-vig/
+    # ask-pricing invalidates stale rows even when the model never moved.
+    "pricing_version",
 ]
 
 # Shadow rows record what an unvalidated model *would* have done. They are
@@ -58,7 +69,9 @@ def add_bet(*, sport: str, league: str, game_id: str, matchup: str, market: str,
             kelly_fraction: float | None = None, notes: str = "",
             mode: str = SHADOW, market_ticker: str | None = None,
             market_fair_prob: float | None = None,
-            commence_time: str | None = None) -> str:
+            expiration_time: str | None = None,
+            kickoff_utc: str | None = None,
+            pricing_version: str | None = None) -> str:
     df = _load()
     bet_id = str(uuid.uuid4())[:8]
     row = {
@@ -71,7 +84,8 @@ def add_bet(*, sport: str, league: str, game_id: str, matchup: str, market: str,
         "kelly_fraction": kelly_fraction, "status": "pending",
         "closing_odds_decimal": None, "clv_pct": None, "result_logged_at": None,
         "notes": notes, "mode": mode, "market_ticker": market_ticker,
-        "market_fair_prob": market_fair_prob, "commence_time": commence_time,
+        "market_fair_prob": market_fair_prob, "expiration_time": expiration_time,
+        "kickoff_utc": kickoff_utc, "pricing_version": pricing_version,
     }
     df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
     _save(df)
@@ -79,16 +93,22 @@ def add_bet(*, sport: str, league: str, game_id: str, matchup: str, market: str,
 
 
 def existing_keys() -> set[tuple]:
-    """(market_ticker, model_version) pairs already in the ledger.
+    """(market_ticker, model_version, pricing_version) already in the ledger.
 
     The recommender runs on a schedule against overlapping snapshots, so without
     this every run would re-log the same open game and inflate the bet count.
+
+    `pricing_version` is part of the key on purpose. Deduping on the model
+    alone meant a change to the pricing pipeline -- the liquidity gate, the
+    de-vig, ask-vs-mid -- left existing rows in place and refused to re-price
+    them, because the model string had not moved. That is how 12 EPL rows
+    survived the 2026-09-10 liquidity fix that voided their NFL counterparts.
     """
     df = _load()
     if df.empty or "market_ticker" not in df.columns:
         return set()
     return {
-        (r["market_ticker"], r["model_version"])
+        (r["market_ticker"], r["model_version"], r.get("pricing_version"))
         for _, r in df.iterrows()
         if r.get("market_ticker")
     }
@@ -111,11 +131,23 @@ def record_result(bet_id: str, status: str, closing_odds_decimal: float | None =
 
 def _summarize_frame(df: pd.DataFrame) -> dict:
     settled = df[df["status"].isin(SETTLED_STATUSES)] if not df.empty else df
+    # Voided rows are withdrawn evidence, not open positions. Counting them as
+    # pending overstated the live book by 30 rows and folded prices the
+    # project has explicitly disowned into avg_edge_pct -- including two
+    # voided EPL rows whose "edges" were +206% and +64%, which alone moved the
+    # shadow average by more than 10 points.
+    voided = df[df["status"] == "void"] if not df.empty else df
+    open_bets = len(df) - len(settled) - len(voided)
+    active = df[~df["status"].isin([*SETTLED_STATUSES, "void"])] if not df.empty else df
     base = {
-        "total_bets": len(df),
+        "total_bets": len(df) - len(voided),
         "settled": len(settled),
-        "pending": len(df) - len(settled),
-        "avg_edge_pct": df["edge_pct"].mean() if not df.empty else None,
+        "pending": open_bets,
+        "void": len(voided),
+        "avg_edge_pct": (
+            pd.concat([settled, active])["edge_pct"].mean()
+            if not df.empty and (len(settled) + len(active)) else None
+        ),
     }
     if df.empty or settled.empty:
         return {**base, "win_rate": None, "roi_pct": None, "avg_clv_pct": None,

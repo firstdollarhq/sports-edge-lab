@@ -33,7 +33,7 @@ def _row(selection, bid, ask, **kw):
         "event_ticker": "KXNFLGAME-26SEP21NYGLAR",
         "market_ticker": f"KXNFLGAME-26SEP21NYGLAR-{selection.upper()}",
         "home_team": "LA", "away_team": "NYG", "selection": selection,
-        "commence_time": "2026-09-22T03:15:00Z",
+        "expiration_time": "2026-09-22T03:15:00Z",
         "yes_bid": bid, "yes_ask": ask, "implied_prob_mid": (bid + ask) / 2,
         "spread": round(ask - bid, 4), "yes_ask_size": 900.0, "yes_bid_size": 900.0,
         "volume": 9000.0,

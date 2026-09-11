@@ -5,20 +5,20 @@ A research project testing predictive sports models against real market odds.
 to find a real, validated edge, not to confirm a bias. See `journal/` for an
 honest, dated log of what was tried and what happened.
 
-## Status (2026-09-10, scheduled run #1)
+## Status (2026-09-11, scheduled run #3)
 
-- **0 live bets. 39 shadow bets** (27 NFL, 12 EPL), all pending — they settle
-  Sep 19-22. Shadow bets record what an unvalidated model *would* have done;
-  they are excluded from headline win rate and ROI.
-- Two leagues active: **NFL** (season underway) and **EPL** (English Premier
-  League, season underway). NBA/NHL are stubbed in `config/leagues.yaml` but
-  disabled — their seasons start in ~a month.
-- **102 model configurations backtested across both sports. None beat the
-  market.** Nothing adopted, `live_enabled` is `false` everywhere. The gap is
-  an information gap, not a calibration bug — parameter tuning is exhausted.
-  See `journal/2026-09-10-scheduled-run-1-*.md`.
-- The full loop now exists end-to-end: snapshot → recommend → settle → CLV.
-  Before this run there was no code path that could place or settle a bet.
+- **0 live bets. 1 settled shadow bet (a win), 35 pending, 30 void.** The one
+  settled bet is SF @ LA (SF won 27-7) at +11.06% edge. Its CLV is 0.0% and
+  that number is **vacuous** -- the last snapshot was 7.5h pre-kickoff, so
+  entry and "closing" price are the same captured row. One bet is not a win
+  rate.
+- **150 model configurations backtested across both sports. None beat the
+  market.** Nothing adopted, `live_enabled` is `false` everywhere. Elo
+  parameter tuning is exhausted; the remaining gap is information, not
+  parameters.
+- Two lookahead bugs found and fixed so far, both the same shape: a column
+  whose name asserted a meaning it did not hold, feeding the one function that
+  promised no leakage. See "Known-bad numbers" below.
 
 ## Why these data sources
 
@@ -171,15 +171,43 @@ confirming a bias.**
 
 ## Known-bad numbers (withdrawn)
 
-Every **NFL ROI figure** published before 2026-09-10 run 2 was computed with
-the within-season order scrambled: the ingest stored `week` as a string, so
-`"10"` sorted before `"2"` and each season ran 1, 10, 11 … 18, 19, 2, 20 …
-The model predicted week 2 from ratings that had absorbed weeks 10-18.
-Corrected 2018-2024 vanilla Elo is **-8.21% ROI, not -4.65%**. NFL log-loss
-figures moved by ~0.001 and are effectively unaffected; all EPL figures are
-unaffected and reproduce exactly. No adoption decision changes — nothing was
-live. Fixed in `ingest/nfl_stats.py` and `backtest/engine.py`, pinned by
+**NFL ROI before 2026-09-10 run 2 -- withdrawn.** The ingest stored `week` as a
+string, so `"10"` sorted before `"2"` and each season ran 1, 10, 11 ... 18, 19,
+2, 20 ... The model predicted week 2 from ratings that had absorbed weeks
+10-18. Corrected 2018-2024 vanilla Elo is **-8.21% ROI, not -4.65%**. Log-loss
+moved by ~0.001 and is effectively unaffected; all EPL figures are unaffected
+and reproduce exactly. No adoption decision changes. Pinned by
 `tests/test_backtest_order.py`.
+
+**NFL CLV -- caught before it produced a number.** `commence_time` was
+populated from Kalshi's `expected_expiration_time`, which lands **3-6 hours
+after kickoff** on every NFL event measured (27 at +3h, 4 at +6h, 0 on time;
+Kalshi has no kickoff field). Both closing-price paths treated it as kickoff,
+so they could return an **in-play** quote. Demonstrated: `closing_quote_before()`
+for SF @ LA returned bid 0.98 / ask 0.99 against an entry of 0.36 -- a CLV of
+~+175% produced entirely by the clock, and one that would only ever look good
+when the bet won. Nothing published depended on it: no candlestick CLV had been
+computed and no snapshot contains an in-play row. Fixed by
+`ingest/kickoff.py`; pinned by `tests/test_kickoff.py`.
+
+**Run 1's 102-config sweep is not reproducible.** Its script was never
+committed and a faithful reconstruction does not match it (best 0.6396 here vs
+0.6459 reported). The no-adoption conclusion is unaffected -- the gap to the
+market is far larger than the discrepancy -- but the individual figures should
+not be quoted. The sweep now lives in `backtest/sweep.py` with its protocol
+documented.
+
+### Where kickoff comes from, and why it matters
+
+Kalshi timestamps are **never** a pre-game cutoff. Kickoff is resolved from the
+stats sources only -- nflverse `gameday`+`gametime`, football-data.co.uk
+`Date`+`Time` -- via `ingest/kickoff.py`. If a kickoff cannot be resolved, the
+bet settles with **no CLV** rather than a guessed one: a missing number is
+recoverable, a fabricated one is not.
+
+An in-play price already knows the result. CLV computed against one is not a
+noisy skill measurement, it is a restatement of win/loss -- which is why this
+mattered more than the ROI bug that preceded it.
 
 ## Open questions / next steps
 

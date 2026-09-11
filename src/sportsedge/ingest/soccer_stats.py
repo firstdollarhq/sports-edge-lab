@@ -7,10 +7,14 @@ Season codes are 4-digit, e.g. '2425' for the 2024/25 season.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 BASE_URL = "https://www.football-data.co.uk/mmz4281/{season}/{league}.csv"
+
+# football-data.co.uk's `Time` column is a UK wall clock, not UTC.
+_FOOTBALL_DATA_TZ = ZoneInfo("Europe/London")
 
 LEAGUE_NAMES = {
     "E0": "EPL",
@@ -40,8 +44,24 @@ def fetch_soccer_games(league_code: str, seasons: list[str]) -> pd.DataFrame:
         draw_odds = raw["AvgD"] if "AvgD" in raw.columns else raw.get("B365D")
         away_odds = raw["AvgA"] if "AvgA" in raw.columns else raw.get("B365A")
 
-        game_date = pd.to_datetime(raw["Date"], dayfirst=True).dt.strftime("%Y-%m-%d")
+        parsed_date = pd.to_datetime(raw["Date"], dayfirst=True)
+        game_date = parsed_date.dt.strftime("%Y-%m-%d")
         season_label = f"20{season[:2]}-{season[2:]}"
+
+        # Real kickoff, used as the cutoff for every closing-price lookup.
+        # The `Time` column was previously parsed and thrown away, which left
+        # the project with no kickoff for soccer at all and forced the CLV
+        # path onto Kalshi's expiration timestamp -- 3+ hours after kickoff,
+        # i.e. an in-play price. Older seasons predate the column.
+        if "Time" in raw.columns:
+            naive = pd.to_datetime(
+                game_date + " " + raw["Time"].astype(str), errors="coerce")
+            kickoff = (naive.dt.tz_localize(_FOOTBALL_DATA_TZ, ambiguous=True,
+                                            nonexistent="shift_forward")
+                            .dt.tz_convert(timezone.utc)
+                            .apply(lambda t: None if pd.isna(t) else t.isoformat()))
+        else:
+            kickoff = pd.Series([None] * len(raw), index=raw.index)
 
         # Deterministic ID from (season, date, teams) rather than row index.
         # In-progress seasons get re-ingested repeatedly as results land; an
@@ -60,6 +80,7 @@ def fetch_soccer_games(league_code: str, seasons: list[str]) -> pd.DataFrame:
             "season": season_label,
             "week": None,
             "game_date": game_date,
+            "kickoff_utc": kickoff,
             "home_team": raw["HomeTeam"],
             "away_team": raw["AwayTeam"],
             "home_score": raw["FTHG"],
