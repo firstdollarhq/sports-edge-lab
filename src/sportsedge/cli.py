@@ -304,6 +304,13 @@ def cmd_recommend(args):
         # against a price nobody is offering" that liquidity.py exists to stop.
         rows, rejected = liquidity.partition(rows, **config.liquidity_kwargs())
 
+        # Drop contracts whose game is already under way. The models here are
+        # pre-game models, so against an in-play quote the gap between model
+        # and market measures how far behind the model is, not an edge -- and
+        # it lands on whichever side is currently losing. Counted separately
+        # so a gated board is visible in the summary rather than silent.
+        rows, in_play = recommend_mod.partition_in_play(sport, rows)
+
         if sport == "nfl":
             model = build_nfl_model(games, use_mov=args.mov)
             recs = recommend_mod.recommend_nfl(
@@ -343,7 +350,8 @@ def cmd_recommend(args):
 
         out[sport] = {
             "contracts": len(rows),
-            "illiquid_skipped": len(rejected), "recommendations": len(recs),
+            "illiquid_skipped": len(rejected), "in_play_skipped": len(in_play),
+            "recommendations": len(recs),
             "mode": mode, "live_enabled": live,
             "logged": logged, "skipped_duplicate": skipped,
             "flagged_rate_pct": round(100 * len(recs) / max(1, len(rows)), 1),

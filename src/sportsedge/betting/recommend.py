@@ -32,6 +32,7 @@ Two deliberate choices about honesty:
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import timedelta
 
 import pandas as pd
 
@@ -157,8 +158,10 @@ def _market_fair_probs(sides: dict[str, dict], sport: str) -> dict[str, float] |
 
 
 def recommend_nfl(snapshot_rows: list[dict], model, *, edge_threshold: float = 0.03,
-                  kelly_multiplier: float = 0.25, apply_liquidity: bool = True) -> list[dict]:
+                  kelly_multiplier: float = 0.25, apply_liquidity: bool = True,
+                  now=None) -> list[dict]:
     fillable = liquidity.partition(snapshot_rows)[0] if apply_liquidity else snapshot_rows
+    fillable = partition_in_play("nfl", fillable, now=now)[0]
     out = []
     for event_ticker, sides in _group_events(fillable).items():
         fair = _market_fair_probs(sides, "nfl")
@@ -182,8 +185,9 @@ def recommend_nfl(snapshot_rows: list[dict], model, *, edge_threshold: float = 0
 
 def recommend_soccer(snapshot_rows: list[dict], model, calibrator, *,
                      edge_threshold: float = 0.03, kelly_multiplier: float = 0.25,
-                     apply_liquidity: bool = True) -> list[dict]:
+                     apply_liquidity: bool = True, now=None) -> list[dict]:
     fillable = liquidity.partition(snapshot_rows)[0] if apply_liquidity else snapshot_rows
+    fillable = partition_in_play("soccer", fillable, now=now)[0]
     out = []
     for event_ticker, sides in _group_events(fillable).items():
         fair = _market_fair_probs(sides, "soccer")
@@ -208,6 +212,73 @@ def recommend_soccer(snapshot_rows: list[dict], model, calibrator, *,
                 kelly_multiplier=kelly_multiplier, event_ticker=event_ticker,
             ))
     return out
+
+
+# How far Kalshi's expiration sits after the real kickoff, per sport. Measured
+# on the 2026-09-10 NFL board: 27 of 31 events at +3h, 4 at +6h. EPL's Saturday
+# expiries (17:00 / 19:30 / 22:00Z) sit 3h after the league's standard
+# 14:00 / 16:30 / 19:00Z kickoffs, and 2026-09-12 confirmed it from the tape:
+# only the 17:00Z contracts moved during the afternoon (up to 0.57), while the
+# 19:30Z, 22:00Z and next-day contracts held to within 0.02.
+#
+# These are the LARGEST lag per sport, which places the inferred kickoff as
+# early as possible. That is the conservative direction: inferring kickoff too
+# early costs a betting opportunity, inferring it too late writes an in-play
+# price into the permanent bet record.
+_MAX_EXPIRATION_LAG = {"nfl": timedelta(hours=6), "soccer": timedelta(hours=3)}
+
+
+def _gate_kickoff(sport: str, row: dict):
+    """Best estimate of kickoff for the in-play gate, as a UTC Timestamp.
+
+    Prefers the true kickoff from the stats source. Falls back to the
+    expiration minus the sport's largest lag, because for EPL the true kickoff
+    is never available in time: football-data.co.uk publishes only completed
+    matches, so a fixture being played right now is not in any table we hold.
+    Requiring a resolvable kickoff before betting would therefore not be the
+    safe option -- it would silently end the EPL arm of the experiment.
+    """
+    ko = _kickoff_iso(sport, row)
+    if ko is not None:
+        return pd.to_datetime(ko, utc=True, errors="coerce")
+    exp = pd.to_datetime(row.get("expiration_time"), utc=True, errors="coerce")
+    if pd.isna(exp):
+        return None
+    return exp - _MAX_EXPIRATION_LAG.get(sport, timedelta(hours=6))
+
+
+def partition_in_play(sport: str, rows: list[dict], *, now=None) -> tuple[list[dict], list[dict]]:
+    """Split quotes into (not yet started, already under way).
+
+    The model is a PRE-GAME model. Once the ball is in play the market price
+    reflects the run of play and the model does not, so the difference between
+    them stops being an edge and becomes a measure of how far behind the model
+    is. The sign of that is not random: the "edge" appears on whichever side is
+    currently LOSING, because that is the side the market has marked down. A
+    rule that bets it is a rule that systematically buys teams that are behind.
+
+    This bit on 2026-09-12. With six EPL fixtures ~1h into play, the recommender
+    priced a pre-game Elo against in-play quotes and produced Aston Villa at
+    +278% "edge" (0.44 pre-game, 0.13 live) and Chelsea at +24% (0.80 pre-game,
+    0.41 live), and logged two of them into the ledger. Nothing in the pipeline
+    looked at the clock: `_kickoff_iso` resolved kickoff only to record it, and
+    Kalshi's own `status` field stays "active" throughout a match, so it cannot
+    be used to detect this.
+
+    NFL made it harmless until now only because the season had not started.
+    Week 1 kicks off 2026-09-13, with Sunday games running 17:00-23:30Z -- any
+    scheduled run inside that window would have done the same thing at scale,
+    to the very slate carrying run 4's pre-registered prediction.
+    """
+    now = pd.Timestamp.now(tz="UTC") if now is None else pd.to_datetime(now, utc=True)
+    upcoming, in_play = [], []
+    for row in rows:
+        ko = _gate_kickoff(sport, row)
+        # An unresolvable kickoff AND an unusable expiration means we cannot
+        # tell. Let it through: that is the pre-existing behaviour, and this
+        # gate is here to catch games we can positively identify as started.
+        (in_play if ko is not None and now >= ko else upcoming).append(row)
+    return upcoming, in_play
 
 
 def _kickoff_iso(sport: str, row: dict) -> str | None:
