@@ -5,11 +5,26 @@ A research project testing predictive sports models against real market odds.
 to find a real, validated edge, not to confirm a bias. See `journal/` for an
 honest, dated log of what was tried and what happened.
 
-## Status (2026-09-12, scheduled run #5)
+## Status (2026-09-12, scheduled run #6)
 
-- **0 live bets. 1 settled shadow bet (a win), 72 pending, 30 void.** The one
+- **0 live bets. 1 settled shadow bet (a win), 74 pending, 32 void.** The one
   settled bet is SF @ LA at +11.06% edge; its CLV is 0.0% and that number is
   **vacuous** (last snapshot was 7.5h pre-kickoff). One bet is not a win rate.
+- **The recommender was pricing a pre-game model against in-play markets.**
+  Six EPL fixtures were ~1h into play when run 6 started; it offered Aston
+  Villa at **+278%** "edge" (0.44 pre-game, 0.13 live) and logged two such
+  rows before the check caught it. The error is signed, not noisy: the market
+  marks down whichever side is *currently losing* and the model does not
+  follow, so the apparent edge lands on the losing side nearly every time.
+  Gated off by `recommend.partition_in_play`; the two rows are voided. NFL was
+  spared only because the season had not started — week 1 is 2026-09-13.
+- **EPL closing-line value was structurally zero, and silent.** `settle` fills
+  CLV once and only looks at *pending* rows, but football-data.co.uk publishes
+  only completed matches and publishes them days late, so an EPL bet settles
+  from Kalshi before any source can say when it kicked off — and nothing ever
+  went back for it. `backfill_clv` now recovers it. 14 EPL bets settling
+  tonight would otherwise have lost their CLV permanently, with every price
+  needed to compute it already in the snapshots.
 - **The model loses at both venues, and the exchange is the dearer one.**
   Every ROI here was model-vs-sportsbook; we would trade on Kalshi. Moving the
   NFL sample to the exchange takes ROI from **-8.21% to -11.48%**. The tighter
@@ -43,8 +58,11 @@ honest, dated log of what was tried and what happened.
 - **Every logged edge was overstated by roughly the fee** -- 5.39pp on the open
   book. `edge_after_fee_pct` now records it per row. It is reported, not
   enforced: see "The fee is reported, not enforced" below.
-- Five bugs of one shape found so far, all a value that was not what the
-  surrounding code assumed. See "Known-bad numbers" below.
+- Seven bugs of one shape found so far, all a value that was not what the
+  surrounding code assumed -- most recently a quote that was not a pre-game
+  price, and a sort key that was `str` and `int64` at once. The seventh changed
+  no published number and is flagged as such rather than padding the count.
+  See "Known-bad numbers" below.
 
 ## Why these data sources
 
@@ -188,7 +206,10 @@ python -m sportsedge.cli ledger-summary
 python -m sportsedge.cli snapshot-odds        # capture live odds (run often!)
 python -m sportsedge.cli recommend --dry-run  # see picks without writing
 python -m sportsedge.cli recommend            # write to bets/ledger.csv
-python -m sportsedge.cli settle               # resolve finished games, fill CLV
+python -m sportsedge.cli settle               # resolve finished games, fill CLV,
+                                              # and recover CLV on rows that
+                                              # settled before the stats source
+                                              # published their kickoff
 python -m sportsedge.cli verify-settlements   # cross-check Kalshi vs stats source
 ```
 
@@ -256,6 +277,25 @@ future run moves the threshold as a `p3` bump.
 
 ## Known-bad numbers (withdrawn)
 
+**Two EPL bets from 2026-09-12 run 6 -- voided.** Liverpool v Fulham and
+Chelsea v Hull were priced at 15:11Z against fixtures that kicked off at 14:00Z,
+by a pre-game Elo reading in-play quotes. Both sides bet had been marked *down*
+by the market (Liverpool 0.66 -> 0.52, Chelsea 0.80 -> 0.41), so the "edge" was
+the model's ignorance of the score. Not tradeable prices and not evidence about
+the model. An audit of all 76 open rows against the new gate found exactly these
+2 failing, so `PRICING_VERSION` deliberately did not move: there were no rows
+priced under a superseded rule to invalidate, and bumping it would have re-logged
+74 correct rows and disposed of run 4's pre-registered prediction. Gated by
+`recommend.partition_in_play`; `tests/test_in_play_gate.py`.
+
+**EPL closing-line value before run 6 -- a number that never existed.** Not a
+wrong figure but an empty column: `settle_pending` fills CLV only for rows that
+are still `pending`, and football-data.co.uk publishes only completed matches,
+days late, so an EPL bet always settled before its kickoff could be resolved and
+was never revisited. Recovered by `settle.backfill_clv`, which re-resolves the
+kickoff and fills from the committed snapshots — still cutting at true kickoff,
+never at Kalshi's expiry. `tests/test_clv_backfill.py`.
+
 **NFL ROI before 2026-09-10 run 2 -- withdrawn.** The ingest stored `week` as a
 string, so `"10"` sorted before `"2"` and each season ran 1, 10, 11 ... 18, 19,
 2, 20 ... The model predicted week 2 from ratings that had absorbed weeks
@@ -311,6 +351,19 @@ An in-play price already knows the result. CLV computed against one is not a
 noisy skill measurement, it is a restatement of win/loss -- which is why this
 mattered more than the ROI bug that preceded it.
 
+"Recoverable" became true rather than aspirational in run 6. Because
+football-data.co.uk publishes only completed matches, and days late, an EPL
+kickoff is *never* resolvable while the bet is open -- so "no CLV at
+settlement" was permanent, not deferred, until `settle.backfill_clv` began
+revisiting settled rows once the source catches up.
+
+The same clock cuts the other way at the front of the pipeline:
+`recommend.partition_in_play` refuses to *price* a game that has already
+started. Where kickoff is unresolvable it infers one from the expiration minus
+the sport's largest measured lag (NFL 6h, EPL 3h) -- deliberately the earliest
+plausible kickoff, because inferring early costs a bet and inferring late
+corrupts the record.
+
 ## Open questions / next steps
 
 - **The selection gap is the thing to attack, not the ratings.** A model need
@@ -326,14 +379,28 @@ mattered more than the ROI bug that preceded it.
   on 32 bets, CI [-73.9, +94.3], from a weight log-loss says is worse than
   betting nothing. It regenerates on every run. `summarize_blend` prints such
   rows with their log-loss delta attached for this reason.
-- **Build the Kalshi-venue backtest.** Still the highest-value work left and
-  still not done. `backtest/engine.py`'s docstring points at
-  `backtest.kalshi_engine`, which does not exist. Everything measured is
-  model-vs-sportsbook; we would trade on an exchange.
-- **Audit the remaining joins and sort keys.** Four bugs of the same shape
+- ~~Build the Kalshi-venue backtest~~ -- **done in run 5**
+  (`backtest/kalshi_engine.py`). The exchange is the *dearer* venue: NFL ROI
+  -8.21% at the sportsbook, -11.48% simulated at Kalshi.
+- **Run 4's pre-registered prediction starts resolving 2026-09-12 evening**
+  (14 EPL) and 2026-09-13 (49 NFL): ~30 wins if the claimed edges are real,
+  ~22 if the selection audit is right. This is the first real evidence the
+  project will produce. Settle it and report the count honestly whichever way
+  it falls, and move nothing in the pricing pipeline until it has.
+- **Verify the first backfilled CLV by hand** before trusting the aggregate.
+  `backfill_clv` is tested but has never run against real settled rows, and a
+  column that fills with plausible-looking numbers is precisely this project's
+  recurring failure.
+- **Measure the EPL expiry lag rather than assuming 3h.** The in-play gate's
+  fallback is the one place a constant stands in for a measurement. Today's
+  fixtures reach the stats table within days, at which point
+  `kickoff.expiration_lag` can measure it for EPL as run 3 did for NFL.
+- **Audit the remaining joins and sort keys.** Seven bugs of the same shape
   now. Every column whose name asserts a semantic (`*_time`, `*_date`,
   `week`, `season`) deserves an explicit check that it holds what the name
-  claims -- as does every "last season" that might be in progress.
+  claims -- as does every "last season" that might be in progress, every value
+  that might have a *type* other than the one the code assumes, and every
+  price that might not be pre-game.
 - The two sports fail for *different* reasons: NFL is under-dispersed
   (model sd 0.132 vs market 0.187); EPL's dispersion is already fine.
 - ~~Kalshi liquidity filter~~ -- **done** (`betting/liquidity.py`). The 5%
