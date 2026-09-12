@@ -1,4 +1,14 @@
+import pytest
+
 import sportsedge.betting.ledger as ledger_mod
+
+
+@pytest.fixture
+def tmp_ledger(tmp_path, monkeypatch):
+    """An empty ledger on disk, isolated from the committed one."""
+    path = tmp_path / "ledger.csv"
+    monkeypatch.setattr(ledger_mod, "LEDGER_PATH", path)
+    return path
 
 
 def _add(mode, **kw):
@@ -127,3 +137,61 @@ def test_voided_bets_are_not_counted_as_pending_or_in_avg_edge(tmp_path, monkeyp
     assert s["void"] == 1
     assert s["total_bets"] == 1
     assert s["avg_edge_pct"] == 10.0
+
+
+# -- the fee backfill: a derived column, never a re-pricing --------------------
+
+
+def test_backfill_after_fee_is_derived_not_a_repricing(tmp_ledger):
+    """It may add the fee-inclusive edge; it may not touch anything else.
+
+    The 70 open bets carry run 4's pre-registered prediction, which settles
+    from 2026-09-13. Computing a number those rows already implied is safe;
+    changing price, stake, status or pricing_version would swap the test's
+    population out from under it. This is the test that should fail if a
+    future run blurs the two.
+    """
+    from sportsedge.betting import ledger as led
+
+    bet_id = led.add_bet(
+        sport="nfl", league="NFL", game_id="g1", matchup="A @ B", market="moneyline",
+        selection="away", model_prob=0.40, model_version="v1",
+        market_odds_decimal=1 / 0.30, book="kalshi", edge_pct=33.33, stake=1.0,
+        market_ticker="T-1", pricing_version="p2")
+
+    before = led._load().set_index("bet_id").loc[bet_id].to_dict()
+    res = led.backfill_after_fee_edges(0.07)
+    after = led._load().set_index("bet_id").loc[bet_id].to_dict()
+
+    assert res["filled"] == 1
+    # ask = 0.30, fee = 0.07 * 0.30 * 0.70 = 0.0147, so you pay 0.3147.
+    assert after["edge_after_fee_pct"] == pytest.approx((0.40 / 0.3147 - 1) * 100)
+    assert after["fee_assumption"] == 0.07
+
+    untouched = ["status", "stake", "edge_pct", "market_odds_decimal", "model_prob",
+                 "pricing_version", "model_version", "selection", "mode", "placed_at"]
+    for col in untouched:
+        assert after[col] == before[col], f"backfill must not move {col}"
+
+
+def test_backfill_is_idempotent(tmp_ledger):
+    from sportsedge.betting import ledger as led
+
+    led.add_bet(sport="nfl", league="NFL", game_id="g1", matchup="A @ B",
+                market="moneyline", selection="away", model_prob=0.40,
+                model_version="v1", market_odds_decimal=1 / 0.30, book="kalshi",
+                edge_pct=33.33, stake=1.0, market_ticker="T-1", pricing_version="p2")
+    assert led.backfill_after_fee_edges(0.07)["filled"] == 1
+    second = led.backfill_after_fee_edges(0.07)
+    assert second["filled"] == 0 and second["skipped"] == 1
+
+
+def test_backfill_dry_run_writes_nothing(tmp_ledger):
+    from sportsedge.betting import ledger as led
+
+    led.add_bet(sport="nfl", league="NFL", game_id="g1", matchup="A @ B",
+                market="moneyline", selection="away", model_prob=0.40,
+                model_version="v1", market_odds_decimal=1 / 0.30, book="kalshi",
+                edge_pct=33.33, stake=1.0, market_ticker="T-1", pricing_version="p2")
+    assert led.backfill_after_fee_edges(0.07, dry_run=True)["filled"] == 1
+    assert led._load()["edge_after_fee_pct"].isna().all()

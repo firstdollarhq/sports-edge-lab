@@ -332,6 +332,8 @@ def cmd_recommend(args):
                     expiration_time=r.get("expiration_time"),
                     kickoff_utc=r.get("kickoff_utc"),
                     pricing_version=r.get("pricing_version"),
+                    edge_after_fee_pct=r.get("edge_after_fee_pct"),
+                    fee_assumption=r.get("fee_assumption"),
                     notes="" if live else "model not cleared by backtest; shadow only",
                 )
                 logged += 1
@@ -344,9 +346,12 @@ def cmd_recommend(args):
             "flagged_rate_pct": round(100 * len(recs) / max(1, len(rows)), 1),
         }
         for r in sorted(recs, key=lambda x: -x["edge_pct"])[:args.top]:
+            after = r.get("edge_after_fee_pct")
+            after_s = "    n/a" if after is None else f"{after:+6.1f}%"
             print(f"  [{mode}] {r['matchup']:<34} {r['selection']:<5} "
                   f"model={r['model_prob']:.3f} fair={r['market_fair_prob']:.3f} "
-                  f"ask={r['price_ask']:.2f} edge={r['edge_pct']:+.1f}%")
+                  f"ask={r['price_ask']:.2f} edge={r['edge_pct']:+6.1f}% "
+                  f"after-fee={after_s}")
     print(json.dumps(out, indent=2, default=str))
 
 

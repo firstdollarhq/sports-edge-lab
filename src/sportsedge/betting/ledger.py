@@ -33,6 +33,19 @@ COLUMNS = [
     # Tracked alongside model_version so that a change to the gate/de-vig/
     # ask-pricing invalidates stale rows even when the model never moved.
     "pricing_version",
+    # `edge_pct` is computed at the ask and EXCLUDES Kalshi's trading fee,
+    # which backtest.kalshi_engine measured as the larger of the two venue
+    # costs (~4.7% of stake against the spread's ~1.7%). These two columns
+    # record the fee-inclusive edge and the rate assumed for it, so that the
+    # overstatement is visible per row instead of being a footnote.
+    #
+    # They are REPORTED, not enforced: the threshold still tests `edge_pct`.
+    # See recommend.FEE_RATE_ASSUMPTION for why, and expect this to change
+    # once the week-1 slate settles.
+    #
+    # Both are None on rows written before 2026-09-12.
+    "edge_after_fee_pct",
+    "fee_assumption",
 ]
 
 # Shadow rows record what an unvalidated model *would* have done. They are
@@ -71,7 +84,9 @@ def add_bet(*, sport: str, league: str, game_id: str, matchup: str, market: str,
             market_fair_prob: float | None = None,
             expiration_time: str | None = None,
             kickoff_utc: str | None = None,
-            pricing_version: str | None = None) -> str:
+            pricing_version: str | None = None,
+            edge_after_fee_pct: float | None = None,
+            fee_assumption: float | None = None) -> str:
     df = _load()
     bet_id = str(uuid.uuid4())[:8]
     row = {
@@ -86,6 +101,7 @@ def add_bet(*, sport: str, league: str, game_id: str, matchup: str, market: str,
         "notes": notes, "mode": mode, "market_ticker": market_ticker,
         "market_fair_prob": market_fair_prob, "expiration_time": expiration_time,
         "kickoff_utc": kickoff_utc, "pricing_version": pricing_version,
+        "edge_after_fee_pct": edge_after_fee_pct, "fee_assumption": fee_assumption,
     }
     df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
     _save(df)
@@ -112,6 +128,46 @@ def existing_keys() -> set[tuple]:
         for _, r in df.iterrows()
         if r.get("market_ticker")
     }
+
+
+def backfill_after_fee_edges(rate: float, *, dry_run: bool = False) -> dict:
+    """Fill `edge_after_fee_pct` on rows written before the column existed.
+
+    This is a DERIVED column, not a re-pricing. Everything it needs is already
+    in the row: `market_odds_decimal` is 1/ask by construction, so the ask, the
+    fee and the fee-inclusive edge all follow from what was recorded at the
+    time. No stake, selection, price or status changes, and `pricing_version`
+    deliberately does not move -- nothing about which bets exist is altered.
+
+    That distinction is the whole reason this is safe to run on the 70 open
+    bets carrying run 4's pre-registered prediction. Re-pricing them would
+    swap the population out from under a test that settles on 2026-09-13;
+    computing a number that was always implied in them does not.
+    """
+    df = _load()
+    if df.empty:
+        return {"filled": 0, "skipped": 0}
+    filled = skipped = 0
+    for i, r in df.iterrows():
+        if r.get("edge_after_fee_pct") is not None:
+            skipped += 1
+            continue
+        dec, p = r.get("market_odds_decimal"), r.get("model_prob")
+        if dec is None or p is None or float(dec) <= 1:
+            skipped += 1
+            continue
+        ask = 1.0 / float(dec)
+        total = ask + rate * ask * (1 - ask)
+        if not 0 < total < 1:
+            skipped += 1
+            continue
+        if not dry_run:
+            df.loc[i, "edge_after_fee_pct"] = (float(p) / total - 1) * 100
+            df.loc[i, "fee_assumption"] = rate
+        filled += 1
+    if not dry_run:
+        _save(df)
+    return {"filled": filled, "skipped": skipped, "rate": rate}
 
 
 def record_result(bet_id: str, status: str, closing_odds_decimal: float | None = None) -> None:

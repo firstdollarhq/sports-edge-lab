@@ -1,6 +1,8 @@
 """Recommendation logic, including the two honesty-critical behaviours:
 pricing at the ask, and only betting when the model genuinely disagrees.
 """
+import pytest
+
 from sportsedge.betting import recommend
 
 
@@ -96,3 +98,68 @@ def test_market_fair_probs_sum_to_one():
     sides = recommend._group_events(rows)["KXNFLGAME-26SEP21NYGLAR"]
     fair = recommend._market_fair_probs(sides, "nfl")
     assert abs(sum(fair.values()) - 1.0) < 1e-9
+
+
+# -- Kalshi's trading fee: reported on every row, binding on none of them ------
+#
+# backtest.kalshi_engine measured the fee as the LARGER of the two venue costs
+# (~4.7% of stake against the spread's ~1.7%), so `edge_pct` -- computed at the
+# ask alone -- overstates every edge this module logs. These pin the two halves
+# of the chosen response: make the overstatement visible per row, and do NOT
+# let it change which bets exist until the pre-registered week-1 prediction has
+# settled. See recommend.FEE_RATE_ASSUMPTION.
+
+
+def test_fee_is_quadratic_and_regressive_in_stake():
+    """Flat in notional, worst as a fraction of stake on longshots."""
+    assert recommend.trading_fee(0.5) == pytest.approx(recommend.FEE_RATE_ASSUMPTION * 0.25)
+    assert recommend.trading_fee(0.2) == pytest.approx(recommend.trading_fee(0.8))
+    as_fraction_of_stake = [recommend.trading_fee(p) / p for p in (0.15, 0.50, 0.85)]
+    assert as_fraction_of_stake == sorted(as_fraction_of_stake, reverse=True)
+
+
+def test_fee_rate_is_flagged_unverified():
+    """Kalshi's API gives the fee's shape, not its coefficient.
+
+    While this is False, nothing may enforce a threshold against the rate or
+    present a fee-inclusive figure as settled.
+    """
+    assert recommend.FEE_RATE_IS_VERIFIED is False
+
+
+def test_after_fee_edge_is_reported_and_lower():
+    recs = recommend.recommend_nfl(
+        [_row("home", 0.39, 0.40), _row("away", 0.59, 0.60)],
+        _FixedNfl(0.60), edge_threshold=0.03)
+    assert recs, "expected at least one flagged side"
+    for r in recs:
+        assert r["edge_after_fee_pct"] is not None
+        assert r["edge_after_fee_pct"] < r["edge_pct"], "the fee cannot increase edge"
+        assert r["fee_assumption"] == recommend.FEE_RATE_ASSUMPTION
+
+
+def test_fee_does_not_change_which_bets_are_flagged():
+    """The threshold still tests the pre-fee edge -- deliberately.
+
+    Run 4 pre-registered a prediction over the 70 open bets and the slate
+    settles from 2026-09-13. Moving the threshold onto the fee-inclusive number
+    now would silently replace that test's population with a different one.
+    When it does move, it moves as a PRICING_VERSION bump and an explicit
+    re-pricing, and this test is the thing that should fail first.
+    """
+    # p_home = 0.416 against an ask of 0.40 is a +4.0% edge before the fee and
+    # -0.2% after it: exactly the row the threshold's choice decides the fate of.
+    rows = [_row("home", 0.39, 0.40), _row("away", 0.59, 0.60)]
+    recs = recommend.recommend_nfl(rows, _FixedNfl(0.416), edge_threshold=0.03)
+    # A side whose edge clears 3% pre-fee but not post-fee must still be logged.
+    borderline = [r for r in recs
+                  if r["edge_pct"] >= 3.0 > (r["edge_after_fee_pct"] or -99)]
+    assert borderline, "fixture should produce a side that the fee would have cut"
+    assert all(r["pricing_version"] == recommend.PRICING_VERSION for r in recs)
+
+
+def test_after_fee_edge_is_none_when_there_is_no_price():
+    recs = recommend.recommend_nfl(
+        [_row("home", 0.0, 0.0), _row("away", 0.59, 0.60)],
+        _FixedNfl(0.60), edge_threshold=0.03)
+    assert all(r["selection"] != "home" for r in recs)
