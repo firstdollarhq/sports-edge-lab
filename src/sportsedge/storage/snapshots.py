@@ -236,7 +236,24 @@ def write_processed(name: str, df: pd.DataFrame) -> tuple[Path, int]:
     else:
         combined = df
 
-    combined = combined.sort_values(["season", "game_date", "game_id"])
+    # The sort key is forced to strings deliberately. `fetch_nfl_games` returns
+    # `season` as str, while reading the stored CSV back gives int64, so after
+    # the concat above the column holds both -- and ordering a mixed str/int
+    # object column compares '2026' against 2026, which is not a comparison.
+    # The rows a refresh changed keep the fetch's str season while the rows
+    # `_keep_unchanged_rows` held back carry storage's int, so the two groups
+    # sorted against each other rather than interleaving: on 2026-09-12 that
+    # moved 267 row positions and spent 48 changed lines on 5 real line moves,
+    # which is the same diff-legibility problem `_keep_unchanged_rows` exists
+    # to solve, reintroduced one layer down.
+    #
+    # No published number depended on this -- every backtest and model re-sorts
+    # for itself, and `read_processed` hands them a column of one dtype -- so
+    # this is about the diff being readable, not about a result being wrong.
+    # Season labels are fixed-width ('2018', '2019-20'), so a string sort
+    # agrees with the numeric one.
+    combined = combined.sort_values(["season", "game_date", "game_id"],
+                                    key=lambda s: s.astype(str))
     combined.to_csv(path, index=False)
     return path, len(combined)
 

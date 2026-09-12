@@ -255,3 +255,39 @@ def test_snapshot_store_survives_a_read_write_cycle(tmp_path, monkeypatch):
     # Re-appending the same capture must dedupe to a byte-identical file.
     snap.append_snapshot([row], sport="nfl")
     assert path.read_bytes() == before, "re-capture must not rewrite stored prices"
+
+
+def test_refresh_does_not_reorder_rows_when_season_dtype_round_trips(tmp_path, monkeypatch):
+    """A changed row must stay in place, not be exiled to the end of the table.
+
+    `fetch_nfl_games` returns `season` as a string; reading the stored CSV back
+    gives int64. So on every refresh after the first, the sort key holds both
+    types at once, and '2026' does not meaningfully compare against 2026. The
+    rows the refresh changed kept the fetch's string while the rows held back
+    by `_keep_unchanged_rows` carried storage's int, so the two groups sorted
+    against each other instead of interleaving -- 267 row positions moved on
+    2026-09-12, turning 5 real line moves into a 48-line diff.
+
+    This is the same diff-legibility guarantee `_keep_unchanged_rows` gives,
+    one layer down: what changed should be what shows up.
+    """
+    import pandas as pd
+    from sportsedge.storage import snapshots as snap
+    monkeypatch.setattr(snap, "PROCESSED_DIR", tmp_path / "processed")
+
+    ids = ["2026_09_AAA", "2026_09_BBB", "2026_09_CCC", "2026_09_DDD"]
+    # First write stores ints, exactly as a CSV round-trip would hand them back.
+    first = pd.DataFrame([_game_row(g, season=2026) for g in ids])
+    path, _ = snap.write_processed("nfl_games", first)
+    assert list(pd.read_csv(path).game_id) == ids
+
+    # The refresh arrives with string seasons, and one line has moved.
+    refreshed = pd.DataFrame([
+        _game_row(g, season="2026", home_odds_decimal=9.9 if g == "2026_09_BBB" else 1.5)
+        for g in ids
+    ])
+    snap.write_processed("nfl_games", refreshed)
+
+    assert list(pd.read_csv(path).game_id) == ids, (
+        "the changed row must sort in place, not after every unchanged row"
+    )
