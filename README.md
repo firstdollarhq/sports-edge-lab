@@ -5,11 +5,25 @@ A research project testing predictive sports models against real market odds.
 to find a real, validated edge, not to confirm a bias. See `journal/` for an
 honest, dated log of what was tried and what happened.
 
-## Status (2026-09-11, scheduled run #4)
+## Status (2026-09-12, scheduled run #5)
 
-- **0 live bets. 1 settled shadow bet (a win), 70 pending, 30 void.** The one
+- **0 live bets. 1 settled shadow bet (a win), 72 pending, 30 void.** The one
   settled bet is SF @ LA at +11.06% edge; its CLV is 0.0% and that number is
   **vacuous** (last snapshot was 7.5h pre-kickoff). One bet is not a win rate.
+- **The model loses at both venues, and the exchange is the dearer one.**
+  Every ROI here was model-vs-sportsbook; we would trade on Kalshi. Moving the
+  NFL sample to the exchange takes ROI from **-8.21% to -11.48%**. The tighter
+  book is worth +2.1pp; the trading fee gives back -5.4pp. See
+  `cli venue-report`.
+- **Why the cheaper venue costs more:** a sportsbook's vig is proportional, so
+  its toll is flat at ~3.2% of stake at every price. Kalshi's fee is quadratic
+  in notional, so as a fraction of *stake* it is `rate x (1 - price)` -- 3.3%
+  on a 70c favourite, **10.6% below 15c**. The bet rule places **88.6% of its
+  bets below even money**. It sits at the expensive end of that curve.
+- **The result does not depend on the one number that could not be verified.**
+  Kalshi's API gives the fee's shape but not its coefficient, so the rate is a
+  parameter and the run reports the range: NFL ROI is negative at every rate
+  **including zero** (-6.10%).
 - **The betting rule, not the rating engine, is the main defect.**
   Unconditionally NFL Elo is roughly calibrated. Conditional on a side being
   *bet* it overstates its win probability by **13.7 points**, in every
@@ -24,9 +38,12 @@ honest, dated log of what was tried and what happened.
 - **150 model configurations backtested. None beat the market.** Nothing
   adopted, `live_enabled` is `false` everywhere.
 - **EPL's +8.27% ROI is retired.** Re-run with each season as holdout it is
-  1 of 6 positive; pooled **-8.30%**, sd 9.33pp. It was the best of six draws
-  from a distribution centred near -8%.
-- Four bugs of one shape found so far, all a value that was not what the
+  1 of 6 positive; pooled **-8.30%**, sd 9.33pp. At the exchange the same
+  holdout is **-2.85%**.
+- **Every logged edge was overstated by roughly the fee** -- 5.39pp on the open
+  book. `edge_after_fee_pct` now records it per row. It is reported, not
+  enforced: see "The fee is reported, not enforced" below.
+- Five bugs of one shape found so far, all a value that was not what the
   surrounding code assumed. See "Known-bad numbers" below.
 
 ## Why these data sources
@@ -186,6 +203,57 @@ Entries record what worked, what didn't, and why — including negative
 results. **A few weeks of results is noise; the point is signal, not
 confirming a bias.**
 
+## The venue: we backtest against a sportsbook, we would trade on an exchange
+
+`cli venue-report`. Kalshi's public API serves the current board, not a price
+history, so **a Kalshi backtest of 2018-2024 does not exist** and this module
+does not claim one. What it does is measure the venue and substitute it into
+the historical sample. The measurements are real:
+
+| measured 2026-09-12 | value |
+|---|---|
+| Kalshi de-vigged mid vs sportsbook de-vigged fair, same 28 games | **corr 0.9955**, mean abs diff 1.26pp |
+| Kalshi overround at the ask | +1.04% |
+| Sportsbook overround, same games | +4.28% |
+| Kalshi half-spread (672 NFL + 540 EPL quotes) | median **0.5c**, flat across every price bucket |
+
+The forecast agreement is what licenses the substitution: if the two venues
+price the same games the same way, "the model loses to the de-vigged closing
+line" is a statement about both. Every simulated result carries
+`simulated_at_venue: True` so it can never be quoted as an observed return.
+
+Both venues run through the **same** walk-forward loop via a `pricer`, not a
+second copy of it — the week-ordering bug lived in two copies and had to be
+fixed twice. The default path reproduces -8.208908995992267% and log-loss
+0.6517617405253826 exactly, pinned bet-for-bet.
+
+## The fee is reported, not enforced
+
+Kalshi's trading fee is the larger of the two execution costs (~4.7% of stake
+against the spread's ~1.7%), and `recommend.py` prices at the ask only. So
+`edge_pct` overstates every logged edge by roughly the fee — 5.39pp on the
+open book. `edge_after_fee_pct` and `fee_assumption` now record it per row.
+
+The threshold still tests `edge_pct`, deliberately, for two reasons:
+
+1. **The rate is unverified.** The API confirms
+   `fee_type="quadratic_with_maker_fees"` and `fee_multiplier=1` but exposes
+   no coefficient. Enforcing a threshold against a number nobody could read
+   writes it into the permanent bet record.
+2. **It would break a pre-registered prediction that settles 2026-09-13.**
+   Run 4 wrote down, before any game: ~30 wins if the claimed edges are real,
+   ~22 if the selection audit is right. The 70 open bets *are* that test.
+   Re-pricing them into a different population the day before they resolve
+   would dispose of the project's one falsifiable commitment — and in the
+   flattering direction, since the bets the fee cuts are the longshots the
+   audit predicts will lose.
+
+The backfill is therefore strictly derived (`market_odds_decimal` is 1/ask by
+construction); no price, stake, status, selection or `pricing_version` moves.
+`test_backfill_after_fee_is_derived_not_a_repricing` asserts that, and
+`test_fee_does_not_change_which_bets_are_flagged` is the tripwire for when a
+future run moves the threshold as a `p3` bump.
+
 ## Known-bad numbers (withdrawn)
 
 **NFL ROI before 2026-09-10 run 2 -- withdrawn.** The ingest stored `week` as a
@@ -279,3 +347,14 @@ mattered more than the ROI bug that preceded it.
 - Snapshot cadence: CLV requires a captured pre-kickoff price, so run
   `snapshot-odds` several times a day, or at minimum shortly before each
   slate. A missed window is permanently missing data.
+
+**The venue-agreement join fanned out across seasons -- caught in the run that
+introduced it.** The first version matched the Kalshi board to the stats table
+on `(home_team, away_team)`. That pair is not unique: the same fixture recurs
+every season, so **30 events became 131 rows**, comparing today's contracts
+against games from 2020, 2021 and 2024. It reported corr **0.4572** with a
+53-point maximum disagreement, and was nearly written up as "the two venues
+disagree substantially". Disambiguated by kickoff it is 28 rows at corr
+**0.9955**. Fifth bug of this shape; the only reason it was caught is that the
+wrong answer happened to look surprising. Pinned by
+`test_agreement_join_is_kickoff_disambiguated`.
