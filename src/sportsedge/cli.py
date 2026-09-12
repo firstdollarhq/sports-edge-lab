@@ -14,6 +14,9 @@
     python -m sportsedge.cli snapshot-odds            # capture + persist live odds
     python -m sportsedge.cli recommend --sport nfl    # model vs market -> ledger
     python -m sportsedge.cli settle                   # resolve bets + fill CLV
+                                                      # (also recovers CLV on
+                                                      #  rows settled before the
+                                                      #  stats source caught up)
     python -m sportsedge.cli verify-settlements       # cross-check Kalshi vs stats
     python -m sportsedge.cli ledger-summary
 """
@@ -359,6 +362,17 @@ def cmd_settle(args):
     res = settle_mod.settle_pending(dry_run=args.dry_run)
     print(json.dumps(res, indent=2, default=str))
 
+    # Always follow settlement with the recovery pass. EPL contracts finalize
+    # on Kalshi hours-to-days before football-data.co.uk publishes the match,
+    # so a bet settled by the run above routinely cannot have a CLV yet; this
+    # is what goes back for it once the stats source catches up. Running it
+    # unconditionally is the point -- a recovery pass someone has to remember
+    # to invoke is how the number goes missing in the first place.
+    if not args.no_backfill:
+        back = settle_mod.backfill_clv(dry_run=args.dry_run)
+        print("\n-- CLV backfill (settled rows that had none) --")
+        print(json.dumps(back, indent=2, default=str))
+
 
 def cmd_verify_settlements(args):
     out = {}
@@ -446,6 +460,8 @@ def main():
 
     p = sub.add_parser("settle")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--no-backfill", action="store_true",
+                   help="skip the CLV recovery pass over already-settled rows")
     p.set_defaults(func=cmd_settle)
 
     p = sub.add_parser("verify-settlements")

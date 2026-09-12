@@ -120,6 +120,100 @@ def settle_pending(*, sports: tuple[str, ...] = ("nfl", "soccer"),
             "unresolved": unresolved, "changes": changes}
 
 
+def backfill_clv(*, dry_run: bool = False) -> dict:
+    """Fill CLV on settled bets whose kickoff reached the stats source late.
+
+    Why this exists
+    ---------------
+    `settle_pending` computes CLV exactly once, at settlement, and only ever
+    iterates rows that are still `pending`. For NFL that is sufficient:
+    nflverse publishes the whole season's schedule in advance, so a game's
+    kickoff is known weeks before it is played and CLV is always computable at
+    the moment the market finalizes.
+
+    football-data.co.uk publishes only COMPLETED matches, and publishes them
+    days late -- on 2026-09-12 its 2026-27 file still ended at 2026-09-06. So
+    an EPL contract settles from Kalshi within minutes of the final whistle,
+    at a moment when no stats source can yet say when that match kicked off.
+    `_closing_odds` then correctly declines to guess and the bet settles with
+    `clv_pct` empty.
+
+    Nothing ever went back for it. The row is no longer pending, so every
+    later run skips it, and the CLV -- which the README calls the better
+    short-run skill signal than win rate -- was lost permanently, even though
+    every price needed to compute it was already sitting in the committed
+    snapshots. That made EPL CLV coverage structurally zero rather than merely
+    thin, and it would have done so silently: the missing-reason string is
+    per-bet and never surfaced in an aggregate.
+
+    What this pass does and does not do
+    -----------------------------------
+    It revisits settled rows with no CLV, re-resolves the kickoff now that the
+    stats source may have caught up, and fills the number from the snapshot
+    history. It fills `kickoff_utc`, `closing_odds_decimal` and `clv_pct` and
+    touches nothing else -- not status, result, stake, selection, price, edge
+    or pricing_version. It never overwrites a CLV that is already present.
+
+    The cutoff is still the true kickoff, exactly as in `_closing_odds`, so a
+    late fill cannot admit an in-play price that settlement would have
+    rejected. A backfill that reached for the expiration instead would rebuild
+    the precise lookahead bug run 3 removed, one sport over and a week later.
+    """
+    # The schedule is memoised, and the entire premise of this pass is that
+    # the stats table has changed since it was last read.
+    kickoff_mod.clear_cache()
+
+    df = ledger_mod._load()
+    if df.empty:
+        return {"candidates": 0, "filled": 0, "still_missing": 0, "changes": []}
+
+    settled_no_clv = df[
+        df["status"].isin(ledger_mod.SETTLED_STATUSES) & df["clv_pct"].isna()
+    ]
+    if settled_no_clv.empty:
+        return {"candidates": 0, "filled": 0, "still_missing": 0, "changes": []}
+
+    filled = 0
+    changes = []
+
+    for idx, bet in settled_no_clv.iterrows():
+        resolved_kickoff = _kickoff_for(bet)
+        closing = _closing_odds(bet)
+        clv = None
+        if closing is not None and bet.get("market_odds_decimal"):
+            clv = _clv_pct(float(bet["market_odds_decimal"]), closing)
+
+        changes.append({
+            "bet_id": bet["bet_id"], "matchup": bet.get("matchup"),
+            "sport": bet.get("sport"), "status": bet.get("status"),
+            "kickoff_utc": resolved_kickoff,
+            "closing_odds_decimal": closing, "clv_pct": clv,
+            "reason": None if clv is not None else (
+                "no kickoff in stats source" if resolved_kickoff is None
+                else "no snapshot captured before kickoff"),
+        })
+
+        if clv is not None:
+            filled += 1
+
+        if not dry_run:
+            # Record the kickoff even when no CLV follows from it: it changes
+            # the diagnosis from "the stats source is behind" to "our snapshot
+            # cadence missed the window", and those need different fixes.
+            if resolved_kickoff is not None:
+                df.loc[idx, "kickoff_utc"] = resolved_kickoff
+            if closing is not None:
+                df.loc[idx, "closing_odds_decimal"] = closing
+            if clv is not None:
+                df.loc[idx, "clv_pct"] = clv
+
+    if not dry_run and changes:
+        ledger_mod._save(df)
+
+    return {"candidates": len(settled_no_clv), "filled": filled,
+            "still_missing": len(settled_no_clv) - filled, "changes": changes}
+
+
 def _closing_odds(bet: pd.Series) -> float | None:
     """Last observed pre-kickoff ask for this contract, as decimal odds.
 
