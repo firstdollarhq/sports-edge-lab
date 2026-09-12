@@ -8,6 +8,7 @@
     python -m sportsedge.cli backtest-soccer --league E0 --seasons 2223 2324 2425
     python -m sportsedge.cli sweep-nfl                # parameter grid vs the closing line
     python -m sportsedge.cli selection-audit          # is the model wrong, or the bet rule?
+    python -m sportsedge.cli venue-report             # what trading on Kalshi instead costs
     python -m sportsedge.cli kalshi-nfl
     python -m sportsedge.cli kalshi-epl
     python -m sportsedge.cli snapshot-odds            # capture + persist live odds
@@ -30,7 +31,7 @@ from sportsedge.ingest.kalshi import snapshot_moneylines, snapshot_nfl_moneyline
 from sportsedge.models.elo import NflEloModel, SoccerEloModel
 from sportsedge.models.live import build_nfl_model, build_soccer_model
 from sportsedge.backtest.engine import backtest_nfl, backtest_soccer
-from sportsedge.backtest import sweep, selection
+from sportsedge.backtest import sweep, selection, kalshi_engine
 from sportsedge.betting import liquidity, recommend as recommend_mod, settle as settle_mod
 from sportsedge.betting import ledger as ledger_mod
 from sportsedge.betting.ledger import summarize
@@ -157,6 +158,50 @@ def cmd_selection_audit(args):
                   if r.roi_ci_lo is not None else "")
             print(f"{r.w:6.2f} {r.log_loss:10.4f} {r.vs_market:+9.4f} {r.n_bets:7d} {roi} {ci:>20}")
         print("\n" + json.dumps(selection.summarize_blend(blend, sides), indent=2, default=float))
+
+
+def cmd_venue_report(args):
+    """Every ROI this project has published is model-vs-sportsbook. We would
+    trade on Kalshi. This reports what that substitution costs.
+
+    Read the header before the table: the exchange numbers are SIMULATED --
+    Kalshi's public API serves the current board, not a price history, so a
+    real exchange backtest of 2018-2024 does not exist. What is real here is
+    the venue's microstructure, measured from the captured snapshots, and the
+    agreement check that licenses substituting it into the historical sample.
+    """
+    print(json.dumps(kalshi_engine.summarize("nfl"), indent=2, default=float))
+
+    nfl = _load_games("nfl_games", args.nfl_seasons, _nfl_season_labels,
+                      fetch_nfl_games, args.nfl_seasons)
+    epl = _load_games("epl_games", args.epl_seasons, _epl_season_labels,
+                      fetch_soccer_games, "E0", args.epl_seasons)
+
+    jobs = (
+        ("NFL", "nfl", lambda g, **kw: backtest_nfl(g, NflEloModel(), **kw), nfl),
+        ("EPL", "soccer", lambda g, **kw: backtest_soccer(g, SoccerEloModel(), **kw), epl),
+    )
+    for label, sport, fn, games in jobs:
+        res = kalshi_engine.compare_venues(fn, games, sport=sport,
+                                           edge_threshold=args.edge_threshold / 100)
+        print(f"\n{'=' * 72}\n{label}  --  half-spread {res['half_spread']:.4f}, "
+              f"fee {res['fee_rate']:.3f} (UNVERIFIED), log-loss {res['log_loss']:.4f}\n"
+              f"{'=' * 72}")
+        print(f"{'venue':<20} {'n':>6} {'win%':>7} {'ROI':>9} {'95% CI':>20} {'sig':>5}")
+        for name, key in (("sportsbook (real)", "sportsbook"),
+                          ("kalshi (SIMULATED)", "kalshi_simulated")):
+            r = res[key]
+            ci = (f"[{r['roi_ci95_pct'][0]:+6.1f},{r['roi_ci95_pct'][1]:+6.1f}]"
+                  if r["roi_ci95_pct"] else "")
+            print(f"{name:<20} {r['n_bets']:6d} {r['win_rate']:7.2f} "
+                  f"{r['roi_pct']:+8.2f}% {ci:>20} {str(r['significant_at_95']):>5}")
+        print(f"{'delta':<20} {res['bets_delta']:+6d} {'':>7} {res['roi_delta_pp']:+8.2f}pp")
+
+        print(f"\nfee sensitivity -- the coefficient is not verified, so read the SIGN "
+              f"across this range, not any single row:")
+        fs = kalshi_engine.fee_sensitivity(fn, games, sport=sport,
+                                           edge_threshold=args.edge_threshold / 100)
+        print(fs.to_string(index=False))
 
 
 def cmd_spread_report(_args):
@@ -336,6 +381,13 @@ def main():
     p = sub.add_parser("selection-audit")
     p.add_argument("--sports", nargs="+", default=["nfl", "soccer"])
     p.set_defaults(func=cmd_selection_audit)
+
+    p = sub.add_parser("venue-report", help="model vs market at Kalshi, not a sportsbook")
+    p.add_argument("--nfl-seasons", nargs="+", type=int, default=list(range(2018, 2025)))
+    p.add_argument("--epl-seasons", nargs="+",
+                   default=["1920", "2021", "2122", "2223", "2324", "2425", "2526"])
+    p.add_argument("--edge-threshold", type=float, default=3.0, help="percent")
+    p.set_defaults(func=cmd_venue_report)
 
     p = sub.add_parser("spread-report")
     p.set_defaults(func=cmd_spread_report)
