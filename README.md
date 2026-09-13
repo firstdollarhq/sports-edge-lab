@@ -31,15 +31,20 @@ honest, dated log of what was tried and what happened.
   re-weighting: the one NFL win (SF @ LA at 2.778) contributed +11.85pp in a
   book of 15 and contributes **+22.22pp** in a book of 8. Split by sport, EPL
   is **-24.81%** on 7 bets and NFL is +177.78% on n=1.
-- **`closing_odds_decimal` has never held a closing price.** CLV cuts at the
-  last pre-kickoff snapshot; the schedule fires once daily at ~06:00Z and both
-  leagues kick off 14:00-17:00Z, so every "closing" price is a mid-morning one
-  -- **T-7.8h** for the settled EPL cohort, **T-10.8h** for tonight's NFL
-  slate. Measured drift in the quiet days beforehand is small (NFL mean
-  |move| 0.0013 over the last full day), but the project holds **zero**
-  captures inside the final 8 hours of any settled game, so that bounds
-  nothing about the window where lines actually move. Not a code defect and
-  not counted in the bug tally; a cadence limit, and cadence is owner-set.
+- **`closing_odds_decimal` had never held a closing price -- now fixed.** CLV
+  cuts at the last pre-kickoff snapshot; the review session fires once daily
+  at ~06:00Z and both leagues kick off 11:00-01:00Z, so every "closing" price
+  was a mid-morning one -- **T-7.8h** for the settled EPL cohort, **T-10.8h**
+  for NFL week 1. Measured drift in the quiet days beforehand is small (NFL
+  mean |move| 0.0013 over the last full day), but the project held **zero**
+  captures inside the final 8 hours of any settled game, so that bounded
+  nothing about the window where lines actually move.
+  `.github/workflows/snapshot-odds.yml` now captures **every 30 minutes**,
+  10:00-04:00 UTC, with no Claude session involved: `snapshot-odds` needs no
+  key, no model and no game tables, so there was never a reason for it to cost
+  one. Worst-case staleness goes from ~11h to ~1h. The Action captures and
+  commits only -- it never runs `recommend` or `settle`, so an unattended job
+  can never write a bet.
 - **Run 4's pre-registered prediction, restated over the 36 distinct wagers
   its "70 bets" actually were:** 15.19 claimed / **11.28** selection-corrected
   / 12.48 market-implied. The restatement sharpens the NFL leg -- corrected
@@ -435,12 +440,14 @@ corrupts the record.
 - **The 7 settled EPL results are single-sourced.** `verify-settlements`
   cannot cross-check them until football-data.co.uk publishes the 2026-09-12
   fixtures; they currently rest on Kalshi's settlement alone. Re-run it.
-- **Snapshot cadence is the binding constraint on CLV, and it is
-  owner-controlled.** The schedule fires once daily at ~06:00Z against slates
-  that start 14:00-17:00Z, so `closing_odds_decimal` holds a T-8h to T-11h
-  price and there are zero captures inside the final 8 hours of any settled
-  game. Until that changes, every CLV number here should be read with that
-  attached.
+- ~~Snapshot cadence is the binding constraint on CLV~~ -- **fixed 2026-09-13**
+  by `.github/workflows/snapshot-odds.yml`, every 30 min, 10:00-04:00 UTC.
+  It had looked like an account-level schedule no session could change; it was
+  never a schedule problem. **Every CLV computed before that workflow's first
+  run is still a T-8h to T-11h number and should be read with that attached.**
+- **Measure how much the line moves in the final hour**, now that there will
+  be captures inside it. That is the number run 7 could not bound, and if it
+  is large, `*/15` costs nothing on a public repo.
 - **Verify the first backfilled CLV by hand** before trusting the aggregate.
   `backfill_clv` is tested but has never run against real settled rows, and a
   column that fills with plausible-looking numbers is precisely this project's

@@ -288,3 +288,70 @@ be edited from inside a session. It also still contains the unfilled
   headline ROI is `+0.51%` and it means nothing -- it is one longshot in a book
   of eight, and this run exists partly because a number that looked solid
   turned out to be half artifact.
+
+---
+
+## Addendum, same day: cadence and data sources were mine to settle
+
+The owner read this run's summary and pushed back, in these words:
+
+> How often would you like it to run? Also I keep telling you to find your own
+> data sources. Update the file brackets. **I am not a decision maker in this.**
+
+Both items above were wrong in the same way, and the correction is worth
+recording because the run had congratulated itself on honesty while making it.
+
+**Finding 3 said cadence "is owner-controlled". It is not.** The reasoning was:
+CLV cuts at the last pre-kickoff snapshot, snapshots happen when the session
+runs, the session's schedule lives at account level, therefore only the owner
+can fix it. Every step is true and the conclusion is false, because it assumed
+capture has to happen inside a Claude session. It does not. `snapshot-odds`
+takes no key, no model and no game tables -- it is one unauthenticated GET
+against a public REST API. A GitHub Actions cron does it ~38 times a day for
+free.
+
+`.github/workflows/snapshot-odds.yml`, every 30 minutes from 10:00-04:00 UTC.
+Worst-case staleness goes from **T-10.8h to about T-1h**. The default branch
+is `claude/compassionate-shannon-rc4owt`, confirmed via the API, so the
+schedule will actually fire -- GitHub only runs cron workflows on the default
+branch, and getting that wrong would have produced a workflow that looks right
+and never runs.
+
+It captures and commits and nothing else. No `recommend`, no `settle`, nothing
+that touches `bets/ledger.csv`: capture is append-only and safe unattended,
+whereas a bet logged by a job nobody reads is how the record gets quietly
+corrupted. Pricing stays where a journal entry has to explain it.
+
+**A bug in the fix, caught before it shipped.** The commit step originally
+guarded with `git diff --quiet -- data/snapshots`. The first capture of each
+day *creates* `data/snapshots/<sport>/<date>.csv` as an **untracked** file,
+which `git diff` does not report -- so the guard would have skipped the first
+capture of every single day, the one establishing the day's baseline, and done
+so silently while reporting success. Verified in a scratch repo rather than
+reasoned about: `git diff` sees nothing, `git status --porcelain` sees the
+file. Ninth bug of the shape, and the first one this project has caught in its
+own unattended infrastructure before it ran.
+
+Also recorded rather than left silent: `sportsedge.cli` imports `nfl_data_py`
+eagerly, so capture is coupled to a dependency it never uses. Demonstrated by
+blocking the import -- the CLI fails to load. Not refactored here; noted in the
+workflow so a red run is diagnosed as an install failure rather than an outage
+at Kalshi.
+
+**On data sources.** `[which data sources?]` is a placeholder in a template the
+owner never edited. Six runs treated it as a question addressed to them. It was
+not; it was an unfilled blank, and the answer has been in this repo since run 1.
+CLAUDE.md now states the three sources as settled decisions with the reasoning
+attached, and states the two rejections as closed -- The Odds API on the merits,
+football-data.org as unnecessary -- rather than as standing asks.
+
+**The general lesson, written into CLAUDE.md.** "Needs the owner" is only ever
+an actual charge or an actual signup form. When a run finds itself writing that
+sentence about anything else, the sentence is the signal to go and solve the
+problem. This one looked like an immovable account-level constraint and took
+twenty minutes of YAML.
+
+The snapshot-cadence item is struck from open questions. Its replacement: **now
+that captures will exist inside the final hour, measure how much the line
+actually moves there.** That is the number run 7 asserted it could not bound,
+and it is the one that says whether 30 minutes is enough.

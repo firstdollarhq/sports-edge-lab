@@ -1,0 +1,93 @@
+# Capture live odds on a schedule, without a Claude session.
+#
+# WHY THIS EXISTS. Closing-line value is computed against the last snapshot
+# taken before kickoff. The scheduled review session fires once a day at
+# ~06:00Z; both leagues kick off between 11:00Z and 01:00Z. So every "closing"
+# price this project held was a mid-morning price -- T-7.8h for the first
+# settled EPL cohort, T-10.8h for NFL week 1 -- and `closing_odds_decimal` did
+# not hold a closing price at all. Run 7 measured drift of 0.0013 mean |move|
+# across the quiet days beforehand, but the project holds ZERO captures inside
+# the final 8 hours of any settled game, which is exactly where team news and
+# late money move a line. That number bounds nothing.
+#
+# `snapshot-odds` needs no key, no model and no game tables -- one unauthenticated
+# GET against Kalshi's public REST API. There is no reason for it to cost a
+# review session, and every reason for it to run far more often than one.
+#
+# WHAT IT DELIBERATELY DOES NOT DO. It captures and commits. It does not run
+# `recommend`, `settle` or anything that writes `bets/ledger.csv`. Pricing
+# decisions stay in a session where a human-readable journal entry explains
+# them; an unattended job that could log bets is an unattended job that can
+# corrupt the record no one is reading. Capture is append-only and safe.
+name: snapshot-odds
+
+on:
+  schedule:
+    # Every 30 minutes across the window that covers both leagues' slates:
+    # EPL from 11:00Z, NFL Sunday through the Monday-night game ending ~04:00Z.
+    # GitHub delays scheduled runs under load and occasionally drops one, so
+    # treat this as "about every 30-45 minutes" -- worst-case staleness lands
+    # near T-1h instead of T-11h, which is the whole point.
+    - cron: "*/30 0-4,10-23 * * *"
+  workflow_dispatch:
+
+# Never let two captures race the same commit.
+concurrency:
+  group: snapshot-odds
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      # Full install, though capture itself needs only pandas/numpy/requests/
+      # pyyaml: `sportsedge.cli` imports `nfl_data_py` eagerly at module level
+      # (via ingest.nfl_stats), so a `--no-deps` install fails at import.
+      # KNOWN FRAGILITY: that couples the irreplaceable job to a dependency it
+      # does not use -- if nfl_data_py ever breaks against a new pandas,
+      # capture stops with it. The fix is to make that import lazy; until then
+      # a red run here means check the install step before assuming Kalshi is
+      # down.
+      - run: pip install -e .
+
+      - name: Capture
+        run: python -m sportsedge.cli snapshot-odds
+
+      - name: Commit
+        run: |
+          set -euo pipefail
+          git config user.name  "sports-edge-lab bot"
+          git config user.email "noreply@github.com"
+          # --porcelain, not `git diff`: the first capture of each day creates
+          # data/snapshots/<sport>/<date>.csv as an UNTRACKED file, which
+          # `git diff` does not report. Checking with diff would have skipped
+          # the first capture of every single day -- the one that establishes
+          # the day's baseline -- and done so silently.
+          if [ -z "$(git status --porcelain -- data/snapshots)" ]; then
+            echo "No change in data/snapshots -- board static, nothing to commit."
+            exit 0
+          fi
+          # Snapshots are append-only per (sport, date), so a concurrent
+          # capture is a rebase, never a conflict. Retry: the board moves
+          # while we push.
+          for attempt in 1 2 3 4 5; do
+            git add data/snapshots
+            git commit -q -m "Odds snapshot $(date -u +%Y-%m-%dT%H:%MZ)" || true
+            if git push -q origin HEAD:${GITHUB_REF_NAME}; then
+              echo "pushed on attempt ${attempt}"
+              exit 0
+            fi
+            echo "push rejected, rebasing (attempt ${attempt})"
+            git pull -q --rebase origin "${GITHUB_REF_NAME}"
+            sleep $((attempt * 5))
+          done
+          echo "::error::could not push snapshot after 5 attempts"
+          exit 1
