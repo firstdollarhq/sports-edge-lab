@@ -5,18 +5,44 @@ A research project testing predictive sports models against real market odds.
 to find a real, validated edge, not to confirm a bias. See `journal/` for an
 honest, dated log of what was tried and what happened.
 
-## Status (2026-09-13, scheduled run #7)
+## Status (2026-09-13, scheduled run #8)
 
-- **0 live bets. 8 settled shadow bets (2 wins), 32 pending, 67 void.**
-  Headline win rate 25%, 95% CI **[3.2%, 65.1%]**. Headline ROI **+0.51%**,
-  which is one longshot divided by eight and means nothing -- see below.
-- **The first real results arrived: 7 EPL wagers, 1 win.** The model expected
-  **2.54** wins, the de-vigged closing line expected **2.01**, reality gave
-  **1**. On the bets the model itself chose it loses to the market on log-loss
-  (0.6725 vs 0.5719) and overstates its sides by +22.0pp against realized
-  versus the market's +14.4pp. The *direction* is run 4's selection audit.
-  The *sample* settles nothing: P(X <= 1) under the model's own probabilities
-  is **0.19**. `cli scorecard`.
+- **0 live bets. 9 settled shadow bets (2 wins), 35 pending, 67 void.**
+  Headline win rate **22.2%**, ROI **-10.66%**. Still one longshot divided by
+  nine; it means nothing either way.
+- **The first result cohort now has an independent cross-check, and it holds.**
+  Run 7 settled 7 EPL wagers from Kalshi's own resolution alone, because
+  football-data.co.uk had not published the fixtures. A second free source
+  (ESPN's public scoreboard) confirms **all 7 results independently**, and
+  `verify-settlements` goes from *90 checked / 21 unmatched* to **114 checked,
+  114 agreed, 0 unmatched**. No settlement was wrong.
+- **CLV exists for the first time: 9 of 9 settled rows now carry one.** Mean
+  **+4.04%**, 5 positive and 4 exactly 0.00, none negative. **Do not read this
+  as skill.** Four of the nine compare an entry price to a "close" captured
+  *twelve minutes later*, the best reference in the set is T-1.2h and the
+  typical one is T-7.8h, and a positive number measured against a later ask is
+  exactly what picking off a thin quote that then reverts also looks like.
+- **The EPL expiration lag is measured, not assumed: exactly 3.00h on 13/13
+  contracts.** It had been an assumed constant since run 5 because no kickoff
+  could be resolved for the settled cohort. NFL is 3.00h x 27 and 6.00h x 3 in
+  the same window, matching what run 6 recorded.
+- **The final hour still has not been measured, and the first attempt to
+  measure it produced a fake zero.** `cli line-movement` initially reported
+  0.00 movement in every near-kickoff bucket -- because for a game that has
+  not kicked off, the "last pre-kickoff quote" *is* the newest bucket's own
+  quote, so the bucket was compared against itself. Over games that have
+  actually kicked off, every closing reference the project holds still sits a
+  median **7.75h** from kickoff.
+- **The EPL cohort is now 8 wagers, 1 win** (Coventry lost 0-5 to Brighton
+  overnight, taking the count from run 7's seven). The model expected **2.83**
+  wins, the de-vigged closing line expected **2.24**, reality gave **1**. On
+  the bets the model itself chose it still loses to the market on log-loss
+  (0.6321 vs 0.5337) and overstates its sides by **+22.9pp** against realized
+  versus the market's +15.5pp. The *direction* is run 4's selection audit; the
+  *sample* settles nothing -- P(X <= 1) under the model's own probabilities is
+  **0.14**, against the market's 0.28, and neither hypothesis is excluded.
+  Across both sports: 9 wagers, 2 wins, model expected 3.23, market 2.60.
+  `cli scorecard`.
 - **The ledger was counting every bet twice.** 75 non-void rows were **40
   distinct wagers**. `existing_keys` puts `pricing_version` in the dedupe key
   so a bump can re-price open rows -- correctly, and there are zero duplicates
@@ -73,8 +99,14 @@ honest, dated log of what was tried and what happened.
   adopted, `live_enabled` is `false` everywhere.
 - **EPL's +8.27% ROI is retired.** Re-run with each season as holdout it is
   1 of 6 positive; pooled **-8.30%**, sd 9.33pp.
-- Eight bugs of one shape so far, all a value that was not what the
-  surrounding code assumed. See "Known-bad numbers" below.
+- **Twelve bugs of one shape so far**, all a value that was not what the
+  surrounding code assumed. Three were introduced *and* caught inside run 8,
+  in the new cross-source code: the line-movement bucket compared against
+  itself (above); `--espn-end` defaulting to the start date, so a range request
+  silently became a one-day request that wrote an empty table and printed a
+  success line; and ESPN's NFL feed including **preseason**, which restarts
+  week numbering at 1 and would have put two meanings of `week` in one
+  committed table. See "Known-bad numbers" below.
 
 ## Why these data sources
 
@@ -83,8 +115,15 @@ honest, dated log of what was tried and what happened.
 | NFL schedules, scores, closing lines (historical) | [nflverse](https://github.com/nflverse/nfl_data_py) | Free, no key | Ships actual closing moneyline/spread/total per game |
 | Soccer results + closing odds (historical) | [football-data.co.uk](https://www.football-data.co.uk/) | Free, no key | CSV per league/season; uses bookmaker-average (`Avg*`) columns when available |
 | **Live market odds (both sports, ongoing)** | **[Kalshi](https://kalshi.com)** public REST API | **Free, no key** | CFTC-regulated exchange; read-only market data needs no auth. Each contract's dollar price *is* the market-implied probability. `KXNFLGAME` / `KXEPLGAME` series. |
-| Live soccer fixtures/standings (optional) | [football-data.org](https://www.football-data.org/) | Free tier, needs key | Only needed if we want fixture metadata beyond what Kalshi/nflverse give us |
-| Alternate sportsbook comparison (optional, not yet used) | [The Odds API](https://theoddsapi.com/) | Free tier is NBA/MLB only; NFL+soccer need **Professional, ~$29/mo** | Not required to get started — Kalshi covers live odds for free. Worth adding later to compare exchange vs. sportsbook pricing. |
+| **Settlement cross-check + kickoff times (both sports)** | **[ESPN public scoreboard](https://site.api.espn.com/apis/site/v2/sports/)** | **Free, no key** | Undocumented endpoint behind espn.com's scoreboard. Schedules and results only — **no odds, never feeds the model**. Publishes within minutes of full time, where football-data.co.uk publishes in batches days later. Verified against the primary source: 30/30 scores and 30/30 kickoffs agree (`cli espn-audit`). |
+
+**Rejected, on the merits, and closed** — these are not open asks and should
+not be re-raised:
+
+| Source | Status | Why |
+|---|---|---|
+| [The Odds API](https://theoddsapi.com/) (~$29/mo for NFL+soccer) | **Rejected, run 2** | Kalshi covers live odds for both leagues free, and run 5's venue work showed the two price the same games the same way (corr 0.9955 over 28 games). Paying for a second view of a number we already hold is not worth $29/mo to a project with no validated edge. |
+| [football-data.org](https://www.football-data.org/) (free tier, needs a human-created key) | **Rejected, run 3 — as unnecessary, not blocked** | It was wanted only for kickoff times. football-data.co.uk already ships them in a column the ingest was discarding, and ESPN now covers the gap for unpublished fixtures. |
 
 Kalshi was not part of the original plan — it came up mid-build as a
 free alternative to a paid odds API, and turned out to cover exactly the two
@@ -437,26 +476,37 @@ corrupts the record.
   consistent with every hypothesis at this n), 28 open, 11 of them settling
   tonight. Report the count honestly whichever way it falls, and move nothing
   in the pricing pipeline until the NFL leg has resolved.
-- **The 7 settled EPL results are single-sourced.** `verify-settlements`
-  cannot cross-check them until football-data.co.uk publishes the 2026-09-12
-  fixtures; they currently rest on Kalshi's settlement alone. Re-run it.
+- ~~The 7 settled EPL results are single-sourced~~ -- **cross-checked in run
+  8** against ESPN's public scoreboard rather than waiting on
+  football-data.co.uk, which still has not published the 2026-09-12 fixtures
+  three runs later. All 7 confirmed; `verify-settlements` now reports 114
+  checked / 114 agreed / **0 unmatched** for soccer. NFL still shows 94
+  unmatched settled Kalshi markets, which is pre-existing and unexamined --
+  ESPN's NFL table starts at 2026-08-01, so it cannot reach them either.
 - ~~Snapshot cadence is the binding constraint on CLV~~ -- **fixed 2026-09-13**
   by `.github/workflows/snapshot-odds.yml`, every 30 min, 10:00-04:00 UTC.
   It had looked like an account-level schedule no session could change; it was
   never a schedule problem. **Every CLV computed before that workflow's first
   run is still a T-8h to T-11h number and should be read with that attached.**
-- **Measure how much the line moves in the final hour**, now that there will
-  be captures inside it. That is the number run 7 could not bound, and if it
-  is large, `*/15` costs nothing on a public repo.
-- **Verify the first backfilled CLV by hand** before trusting the aggregate.
-  `backfill_clv` is tested but has never run against real settled rows, and a
-  column that fills with plausible-looking numbers is precisely this project's
-  recurring failure.
-- **Measure the EPL expiry lag rather than assuming 3h.** The in-play gate's
-  fallback is the one place a constant stands in for a measurement. Today's
-  fixtures reach the stats table within days, at which point
-  `kickoff.expiration_lag` can measure it for EPL as run 3 did for NFL.
-- **Audit the remaining joins and sort keys.** Seven bugs of the same shape
+- **The final hour is STILL unmeasured.** `cli line-movement` now exists and
+  the cron is capturing inside the window, but every game that has *already
+  kicked off* predates the cron, so the closest closing reference the project
+  holds sits a median **7.75h** out. The measurement lands mechanically once
+  today's NFL slate settles -- 13 games with captures at T-2h, T-1.5h, T-1h
+  and T-0.5h. Do it first thing next run, and only then decide on `*/15`.
+- **Verify the backfilled CLV by hand.** `backfill_clv` has now run for real
+  and filled 7 rows, and the aggregate (+4.04%) is the flattering direction,
+  which is this project's standing reason to distrust a number. Two of the
+  seven were checked by hand this run (Arsenal @ Sunderland +16.67%: 0.12 ->
+  0.14 ask between 06:0xZ and the 15:19Z capture, kickoff 19:00Z; Everton @
+  Tottenham 0.00%: same 0.27 ask at entry and at the 15:19Z capture). The
+  other five compare prices captured roughly twelve minutes apart and are
+  arithmetically fine but substantively empty. Finish the check.
+- ~~Measure the EPL expiry lag rather than assuming 3h~~ -- **measured in run
+  8: exactly 3.00h on 13/13 contracts**, via ESPN kickoffs rather than waiting
+  for football-data.co.uk. The assumed constant was right. NFL in the same
+  window is 3.00h x 27 and 6.00h x 3.
+- **Audit the remaining joins and sort keys.** Twelve bugs of the same shape
   now. Every column whose name asserts a semantic (`*_time`, `*_date`,
   `week`, `season`) deserves an explicit check that it holds what the name
   claims -- as does every "last season" that might be in progress, every value
@@ -467,14 +517,11 @@ corrupts the record.
 - ~~Kalshi liquidity filter~~ -- **done** (`betting/liquidity.py`). The 5%
   relative-width gate remains unvalidated against realized fill quality, and
   it has now voided real bets.
-- **Needs the owner (money):** The Odds API Professional (~$29/mo) for a
-  sportsbook-style price to compare against Kalshi's exchange price. Rejected
-  on the merits in run 2; listed here as a standing option, not an open ask.
-- ~~Needs the owner (account): football-data.org key~~ -- **not needed.**
-  football-data.co.uk already ships kickoff times.
-- Snapshot cadence: CLV requires a captured pre-kickoff price, so run
-  `snapshot-odds` several times a day, or at minimum shortly before each
-  slate. A missed window is permanently missing data.
+- **Needs the owner: nothing.** No charge and no signup form is outstanding.
+  Both previously-listed items are closed on the merits (see the rejected-
+  sources table above) and should not be re-raised. When a source is needed,
+  the run finds one: ESPN was added in run 8 to unblock three items that had
+  been waiting on someone else's publication schedule for three runs.
 
 **The venue-agreement join fanned out across seasons -- caught in the run that
 introduced it.** The first version matched the Kalshi board to the stats table
