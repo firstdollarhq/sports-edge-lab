@@ -134,3 +134,79 @@ def test_soccer_kickoff_resolves_once_the_match_is_played(schedule):
     """EPL kickoffs arrive with the result, which is when CLV is computed."""
     ko = kickoff.resolve_kickoff("soccer", "Chelsea", "Hull", "2026-09-12T17:00:00Z")
     assert ko == datetime(2026, 9, 12, 14, 0, tzinfo=UTC)
+
+
+# --- ESPN fallback ----------------------------------------------------------
+#
+# football-data.co.uk publishes EPL results in batches, days after the match.
+# Between settlement and publication the primary table has no row for the
+# fixture, so there is no kickoff, so there is no pre-kickoff cutoff, so there
+# is no CLV. That blocked the same 7 settled rows for three consecutive runs.
+# The fallback fills exactly that hole -- and must never do more than that.
+
+@pytest.fixture
+def schedule_with_fallback(monkeypatch):
+    primary = pd.DataFrame([
+        {"sport": "soccer", "home_team": "Chelsea", "away_team": "Hull",
+         "game_date": "2026-09-12", "kickoff_utc": "2026-09-12T14:00:00+00:00"},
+    ])
+    espn = pd.DataFrame([
+        # Same fixture the primary already holds, with a deliberately WRONG
+        # time, so precedence is observable rather than merely asserted.
+        {"sport": "soccer", "home_team": "Chelsea", "away_team": "Hull",
+         "game_date": "2026-09-12", "kickoff_utc": "2026-09-12T23:59:00+00:00"},
+        # A fixture the primary has not published.
+        {"sport": "soccer", "home_team": "Liverpool", "away_team": "Fulham",
+         "game_date": "2026-09-12", "kickoff_utc": "2026-09-12T14:00:00+00:00"},
+    ])
+    tables = {"epl_games": primary, "espn_epl_games": espn}
+    kickoff.clear_cache()
+    monkeypatch.setattr(kickoff.snapshots, "read_processed",
+                        lambda name: tables[name])
+    yield tables
+    kickoff.clear_cache()
+
+
+def test_fallback_fills_a_fixture_the_primary_lacks(schedule_with_fallback):
+    ko = kickoff.resolve_kickoff("soccer", "Liverpool", "Fulham",
+                                 "2026-09-12T17:00:00Z")
+    assert ko == datetime(2026, 9, 12, 14, 0, tzinfo=UTC)
+
+
+def test_primary_wins_where_it_has_a_kickoff(schedule_with_fallback):
+    """ESPN is a gap-filler, not a second opinion about a time we already hold."""
+    ko = kickoff.resolve_kickoff("soccer", "Chelsea", "Hull",
+                                 "2026-09-12T17:00:00Z")
+    assert ko == datetime(2026, 9, 12, 14, 0, tzinfo=UTC)
+
+
+def test_fallback_makes_the_expiration_lag_measurable(schedule_with_fallback):
+    """The EPL lag was an *assumed* 3h for four runs because no kickoff could
+    be resolved for the settled cohort. With the fallback it is measured."""
+    lag = kickoff.expiration_lag("soccer", "Liverpool", "Fulham",
+                                 "2026-09-12T17:00:00Z")
+    assert lag == timedelta(hours=3)
+
+
+def test_missing_fallback_table_is_not_an_error(monkeypatch):
+    """A fresh clone has no ESPN table until the first refresh; resolution must
+    degrade to primary-only rather than raising."""
+    primary = pd.DataFrame([
+        {"sport": "soccer", "home_team": "Chelsea", "away_team": "Hull",
+         "game_date": "2026-09-12", "kickoff_utc": "2026-09-12T14:00:00+00:00"},
+    ])
+
+    def read(name):
+        if name == "epl_games":
+            return primary
+        raise FileNotFoundError(name)
+
+    kickoff.clear_cache()
+    monkeypatch.setattr(kickoff.snapshots, "read_processed", read)
+    try:
+        assert kickoff.resolve_kickoff("soccer", "Chelsea", "Hull",
+                                       "2026-09-12T17:00:00Z") is not None
+        assert kickoff.resolve_kickoff("soccer", "Liverpool", "Fulham",
+                                       "2026-09-12T17:00:00Z") is None
+    finally:
+        kickoff.clear_cache()

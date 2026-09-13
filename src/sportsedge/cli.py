@@ -17,7 +17,10 @@
                                                       # (also recovers CLV on
                                                       #  rows settled before the
                                                       #  stats source caught up)
+    python -m sportsedge.cli espn-audit               # ESPN vs the primary stats source
     python -m sportsedge.cli verify-settlements       # cross-check Kalshi vs stats
+                                                      #  (primary + ESPN gap-fill)
+    python -m sportsedge.cli line-movement            # price drift by time-to-kickoff
     python -m sportsedge.cli scorecard                 # model vs market vs reality
     python -m sportsedge.cli ledger-summary
 """
@@ -26,12 +29,17 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
+from datetime import timedelta
+
+import pandas as pd
 
 from sportsedge import config
 from sportsedge.storage import db, snapshots
 from sportsedge.ingest.nfl_stats import fetch_nfl_games
 from sportsedge.ingest.soccer_stats import fetch_soccer_games
 from sportsedge.ingest.kalshi import snapshot_moneylines, snapshot_nfl_moneylines, snapshot_epl_moneylines
+from sportsedge.ingest import espn
+from sportsedge.ingest import kickoff as kickoff_mod
 from sportsedge.models.elo import NflEloModel, SoccerEloModel
 from sportsedge.models.live import build_nfl_model, build_soccer_model
 from sportsedge.backtest.engine import backtest_nfl, backtest_soccer
@@ -39,6 +47,7 @@ from sportsedge.backtest import sweep, selection, kalshi_engine
 from sportsedge.betting import liquidity, recommend as recommend_mod, settle as settle_mod
 from sportsedge.betting import ledger as ledger_mod
 from sportsedge.betting import scorecard
+from sportsedge.betting import line_movement
 from sportsedge.betting.ledger import summarize
 
 SPORT_TO_LEAGUE_KEY = {"nfl": "nfl", "soccer": "epl"}
@@ -102,11 +111,66 @@ def cmd_refresh_history(args):
     path, n = snapshots.write_processed("epl_games", epl)
     print(f"epl_games -> {path} ({n} rows)")
 
+    # ESPN schedules/results. Deliberately written to their OWN tables and
+    # never merged into the two above: those carry the closing odds the model
+    # trains on, ESPN carries none, and a merge would leave a table whose odds
+    # columns are populated for some rows and empty for others for reasons
+    # that have nothing to do with the market. See ingest/espn.py.
+    # `--espn-end` defaults to three weeks AHEAD, not to `--espn-start`.
+    #
+    # Two separate reasons, both learned here rather than designed in:
+    #  * ESPN's `dates` takes a single day OR a range, so passing the start
+    #    alone is a valid request for exactly one day -- which returned 0 rows,
+    #    wrote an empty table, and printed a success line while doing it.
+    #  * Ending at *today* covers results but not fixtures, and the schedule is
+    #    wanted for both. Without future rows the in-play gate falls back to
+    #    `expiration - largest observed lag` for every upcoming game
+    #    (recommend._gate_kickoff), which is deliberately conservative but is
+    #    still an inference where a published kickoff exists. Three weeks
+    #    comfortably covers the furthest contract currently on either board.
+    espn_end = args.espn_end or (
+        kickoff_mod.utcnow() + timedelta(days=21)).strftime("%Y-%m-%d")
+    for sport, table in (("nfl", "espn_nfl_games"), ("soccer", "espn_epl_games")):
+        try:
+            games = espn.fetch_espn_games(sport, args.espn_start, espn_end)
+        except Exception as exc:  # a cross-check source must never break refresh
+            print(f"[warn] ESPN {sport} refresh failed ({exc}); keeping existing table")
+            continue
+        if games.empty:
+            # Never let an empty fetch overwrite a populated table. An upstream
+            # hiccup should look like a warning, not like a league with no
+            # fixtures -- the second is indistinguishable from "nothing to
+            # verify" at every downstream call site.
+            print(f"[warn] ESPN {sport} returned 0 games for "
+                  f"{args.espn_start}..{espn_end}; keeping existing table")
+            continue
+        path, n = snapshots.write_processed(table, games)
+        played = int(games["home_score"].notna().sum())
+        print(f"{table} -> {path} ({n} rows total, {len(games)} fetched, {played} played)")
+
     db.init_db()
     with db.get_conn() as conn:
         db.upsert_games(conn, nfl.where(nfl.notna(), None).to_dict("records"))
         db.upsert_games(conn, epl.where(epl.notna(), None).to_dict("records"))
     print("SQLite cache rebuilt from the committed tables.")
+    kickoff_mod.clear_cache()
+
+
+def cmd_espn_audit(args):
+    """Measure ESPN's agreement with the source we already hold.
+
+    CLAUDE.md requires a new source be "verified against something we already
+    hold before any number derived from it is published". This is that check,
+    kept as a command so it re-runs every time rather than once.
+    """
+    out = {}
+    for sport, table in (("nfl", "nfl_games"), ("soccer", "epl_games")):
+        if sport not in args.sports:
+            continue
+        end = args.end or kickoff_mod.utcnow().strftime("%Y-%m-%d")
+        games = espn.fetch_espn_games(sport, args.start, end)
+        out[sport] = espn.audit_against_primary(games, snapshots.read_processed(table))
+    print(json.dumps(out, indent=2, default=str))
 
 
 def cmd_sweep_nfl(args):
@@ -391,12 +455,49 @@ def cmd_settle(args):
         print(json.dumps(back, indent=2, default=str))
 
 
+def _verification_games(sport: str):
+    """Primary results, extended with ESPN's for fixtures the primary lacks.
+
+    Without this the cross-check simply reports `unmatched_games` for anything
+    football-data.co.uk has not published yet -- which is precisely the cohort
+    most in need of checking, since those are the bets that just settled. A
+    settlement nobody could cross-check was counted as "verified 90/90" while
+    the 7 rows that actually mattered sat in the unmatched pile.
+
+    Primary rows win; ESPN only fills gaps, so the existing verification is
+    bit-for-bit unchanged on every game the primary already had.
+    """
+    games = _load_games_for(sport)
+    try:
+        extra = snapshots.read_processed(
+            {"nfl": "espn_nfl_games", "soccer": "espn_epl_games"}[sport])
+    except (FileNotFoundError, KeyError):
+        return games
+
+    played = games.dropna(subset=["home_score", "away_score"])
+    have = {(str(g["game_date"])[:10], g["home_team"], g["away_team"])
+            for _, g in played.iterrows()}
+    extra = extra.dropna(subset=["home_score", "away_score"])
+    keep = [i for i, r in extra.iterrows()
+            if (str(r["game_date"])[:10], r["home_team"], r["away_team"]) not in have]
+    if not keep:
+        return games
+    return pd.concat([games, extra.loc[keep]], ignore_index=True)
+
+
 def cmd_verify_settlements(args):
     out = {}
     for sport in args.sports:
-        games = _load_games_for(sport)
+        games = _verification_games(sport) if args.cross_source else _load_games_for(sport)
         r = settle_mod.verify_against_stats(games, sport)
+        r["source"] = "primary+espn" if args.cross_source else "primary"
         out[sport] = r
+    print(json.dumps(out, indent=2, default=str))
+
+
+def cmd_line_movement(args):
+    """How much the line moves as kickoff approaches, per time-to-kickoff bucket."""
+    out = {sp: line_movement.summarize(sp) for sp in args.sports}
     print(json.dumps(out, indent=2, default=str))
 
 
@@ -413,6 +514,8 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("refresh-history")
+    p.add_argument("--espn-start", default="2026-08-01")
+    p.add_argument("--espn-end", default=None)
     p.add_argument("--nfl-seasons", nargs="+", type=int, default=list(range(2018, 2027)))
     p.add_argument("--epl-seasons", nargs="+",
                    default=["1920", "2021", "2122", "2223", "2324", "2425", "2526", "2627"])
@@ -485,9 +588,23 @@ def main():
                    help="skip the CLV recovery pass over already-settled rows")
     p.set_defaults(func=cmd_settle)
 
+    p = sub.add_parser("espn-audit",
+                       help="measure ESPN's agreement with the primary stats source")
+    p.add_argument("--sports", nargs="+", default=["nfl", "soccer"])
+    p.add_argument("--start", default="2026-08-01")
+    p.add_argument("--end", default=None)
+    p.set_defaults(func=cmd_espn_audit)
+
     p = sub.add_parser("verify-settlements")
+    p.add_argument("--no-cross-source", dest="cross_source", action="store_false",
+                   help="check against the primary stats source only")
     p.add_argument("--sports", nargs="+", default=["nfl", "soccer"])
     p.set_defaults(func=cmd_verify_settlements)
+
+    p = sub.add_parser("line-movement",
+                       help="price drift by time-to-kickoff (is a T-8h CLV cut stale?)")
+    p.add_argument("--sports", nargs="+", default=["nfl", "soccer"])
+    p.set_defaults(func=cmd_line_movement)
 
     p = sub.add_parser("scorecard",
                        help="settled bets vs what the model AND the market expected")

@@ -45,6 +45,19 @@ from sportsedge.storage import snapshots
 # sport -> committed processed table holding that sport's schedule
 _TABLE = {"nfl": "nfl_games", "soccer": "epl_games"}
 
+# Fallback schedule, consulted ONLY for fixtures the primary table has no
+# kickoff for. See ingest/espn.py: football-data.co.uk publishes in batches
+# days after the matches, so a bet can settle from Kalshi while the primary
+# table still has no row for the game -- and with no kickoff there is no
+# pre-kickoff cutoff, hence no CLV. That blocked the same 7 rows for three
+# consecutive runs.
+#
+# Primary always wins where it has a kickoff. ESPN is not "another opinion"
+# about a time we already hold; it fills a hole. (The two were measured
+# agreeing to within 60s on all 30 fixtures both sources held on 2026-09-13,
+# so the precedence is about determinism, not about distrust.)
+_FALLBACK_TABLE = {"nfl": "espn_nfl_games", "soccer": "espn_epl_games"}
+
 # A Kalshi expiration is 3-6h after kickoff for NFL and ~3h for EPL, and the
 # ticker's date code can sit a day off the stats source's local match date for
 # late kickoffs. Two days each way comfortably covers both without being loose
@@ -59,16 +72,54 @@ class KickoffUnavailable(Exception):
     """The stats source has no usable kickoff for this contract."""
 
 
+def _with_kick(df: pd.DataFrame) -> pd.DataFrame:
+    if "kickoff_utc" not in df.columns:
+        df = df.assign(kickoff_utc=None)
+    return df.assign(_kick=pd.to_datetime(df["kickoff_utc"], errors="coerce", utc=True))
+
+
 def _schedule(sport: str) -> pd.DataFrame:
+    """Primary schedule, extended with fallback rows for fixtures it lacks.
+
+    A fallback row is admitted only when the primary table has no kickoff for
+    that (home, away) pairing on that date, so the primary can never be
+    overridden -- only completed.
+    """
     if sport not in _TABLE:
         raise ValueError(f"Unsupported sport: {sport!r}")
-    if sport not in _cache:
-        df = snapshots.read_processed(_TABLE[sport])
-        if "kickoff_utc" not in df.columns:
-            df = df.assign(kickoff_utc=None)
-        df = df.assign(_kick=pd.to_datetime(df["kickoff_utc"], errors="coerce", utc=True))
-        _cache[sport] = df
-    return _cache[sport]
+    if sport in _cache:
+        return _cache[sport]
+
+    primary = _with_kick(snapshots.read_processed(_TABLE[sport]))
+
+    try:
+        fallback = _with_kick(snapshots.read_processed(_FALLBACK_TABLE[sport]))
+    except (FileNotFoundError, KeyError):
+        _cache[sport] = primary
+        return primary
+
+    have = {
+        (r["home_team"], r["away_team"], r["_kick"].strftime("%Y-%m-%d"))
+        for _, r in primary[primary["_kick"].notna()].iterrows()
+    }
+    # Match on the primary's own calendar date too: football-data.co.uk stores
+    # a UK local date, so a 19:00Z Sunday kickoff is the same day either way,
+    # but a late NFL game is not. Both spellings count as "already held".
+    have |= {
+        (r["home_team"], r["away_team"], str(r["game_date"])[:10])
+        for _, r in primary[primary["_kick"].notna()].iterrows()
+        if pd.notna(r.get("game_date"))
+    }
+
+    keep = [
+        i for i, r in fallback.iterrows()
+        if pd.notna(r["_kick"])
+        and (r["home_team"], r["away_team"], r["_kick"].strftime("%Y-%m-%d")) not in have
+    ]
+    merged = (primary if not keep else
+              pd.concat([primary, fallback.loc[keep]], ignore_index=True))
+    _cache[sport] = merged
+    return merged
 
 
 def clear_cache() -> None:
