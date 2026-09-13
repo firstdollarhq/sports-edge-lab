@@ -32,7 +32,13 @@ honest, dated log of what was tried and what happened.
   not kicked off, the "last pre-kickoff quote" *is* the newest bucket's own
   quote, so the bucket was compared against itself. Over games that have
   actually kicked off, every closing reference the project holds still sits a
-  median **7.75h** from kickoff.
+  median **7.75h** from kickoff -- with one exception that arrived as the run
+  ended: Man City @ Man United, where the cron's 15:23Z capture is a reference
+  **7 minutes** before kickoff. Over the final two hours that board moved one
+  tick on one of three contracts (mean |move| **0.0033**). It is n=1 game and
+  the most liquid fixture on the board, so it is the best case for "nothing
+  moves late", not a representative one. The real test is tonight's 13 NFL
+  games.
 - **The EPL cohort is now 8 wagers, 1 win** (Coventry lost 0-5 to Brighton
   overnight, taking the count from run 7's seven). The model expected **2.83**
   wins, the de-vigged closing line expected **2.24**, reality gave **1**. On

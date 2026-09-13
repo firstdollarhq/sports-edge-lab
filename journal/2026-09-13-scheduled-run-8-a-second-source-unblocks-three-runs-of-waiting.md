@@ -197,8 +197,34 @@ have captures inside the final hour; they just have not finished yet.
 
 So the measurement is now mechanical and lands next run, over 13 NFL games
 rather than the 1 EPL game available today. The decision on `*/15` waits for
-it. One weak data point in the meantime: the only T-1.2h reference the project
-holds (Everton @ Tottenham) shows a completely unchanged ask.
+it.
+
+### Addendum, +6 minutes: the first genuine closing reference
+
+Man City @ Man United kicked off at 15:30Z while this run was finishing, and
+the cron's 15:23Z capture became **the first reference price this project has
+ever held inside the final hour -- T-0.12h, about seven minutes before
+kickoff.** The full final-two-hours path:
+
+| capture | T- | MCI ask | draw ask | MUN ask |
+|---|---|---|---|---|
+| 13:31Z | 1.97h | 0.45 | 0.25 | 0.32 |
+| 14:02Z | 1.46h | 0.45 | 0.25 | 0.32 |
+| 14:33Z | 0.94h | 0.45 | **0.26** | 0.32 |
+| 15:01Z | 0.47h | 0.45 | 0.26 | 0.32 |
+| **15:23Z** | **0.12h** | **0.44** | 0.25 | 0.32 |
+
+Net movement over the final two hours: one tick on Man City, a tick out and
+back on the draw, nothing at all on Man United. `cli line-movement` reports the
+T-1h..T-2h bucket at mean **0.0033**, median 0.000, max 0.010, against a
+reference 7 minutes from kickoff.
+
+**This is n = 1 game, 3 contracts, and it is the most liquid fixture on the
+EPL board.** Liquidity and price stability go together, so a Manchester derby
+is the best case for "nothing moves late", not a representative one. Taken with
+the Everton @ Tottenham T-1.2h reading of exactly 0.00%, the project now holds
+two weak data points, both saying quiet, and neither is a basis for changing
+cadence. The NFL cohort tonight is the real test.
 
 ## Bets
 
