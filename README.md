@@ -5,64 +5,71 @@ A research project testing predictive sports models against real market odds.
 to find a real, validated edge, not to confirm a bias. See `journal/` for an
 honest, dated log of what was tried and what happened.
 
-## Status (2026-09-12, scheduled run #6)
+## Status (2026-09-13, scheduled run #7)
 
-- **0 live bets. 1 settled shadow bet (a win), 74 pending, 32 void.** The one
-  settled bet is SF @ LA at +11.06% edge; its CLV is 0.0% and that number is
-  **vacuous** (last snapshot was 7.5h pre-kickoff). One bet is not a win rate.
-- **The recommender was pricing a pre-game model against in-play markets.**
-  Six EPL fixtures were ~1h into play when run 6 started; it offered Aston
-  Villa at **+278%** "edge" (0.44 pre-game, 0.13 live) and logged two such
-  rows before the check caught it. The error is signed, not noisy: the market
-  marks down whichever side is *currently losing* and the model does not
-  follow, so the apparent edge lands on the losing side nearly every time.
-  Gated off by `recommend.partition_in_play`; the two rows are voided. NFL was
-  spared only because the season had not started — week 1 is 2026-09-13.
-- **EPL closing-line value was structurally zero, and silent.** `settle` fills
-  CLV once and only looks at *pending* rows, but football-data.co.uk publishes
-  only completed matches and publishes them days late, so an EPL bet settles
-  from Kalshi before any source can say when it kicked off — and nothing ever
-  went back for it. `backfill_clv` now recovers it. 14 EPL bets settling
-  tonight would otherwise have lost their CLV permanently, with every price
-  needed to compute it already in the snapshots.
+- **0 live bets. 8 settled shadow bets (2 wins), 32 pending, 67 void.**
+  Headline win rate 25%, 95% CI **[3.2%, 65.1%]**. Headline ROI **+0.51%**,
+  which is one longshot divided by eight and means nothing -- see below.
+- **The first real results arrived: 7 EPL wagers, 1 win.** The model expected
+  **2.54** wins, the de-vigged closing line expected **2.01**, reality gave
+  **1**. On the bets the model itself chose it loses to the market on log-loss
+  (0.6725 vs 0.5719) and overstates its sides by +22.0pp against realized
+  versus the market's +14.4pp. The *direction* is run 4's selection audit.
+  The *sample* settles nothing: P(X <= 1) under the model's own probabilities
+  is **0.19**. `cli scorecard`.
+- **The ledger was counting every bet twice.** 75 non-void rows were **40
+  distinct wagers**. `existing_keys` puts `pricing_version` in the dedupe key
+  so a bump can re-price open rows -- correctly, and there are zero duplicates
+  at an identical version -- but re-pricing is a *replacement* and the code
+  only ever did the insert. The p1 -> p2 bump duplicated 35 wagers instead of
+  replacing them, and both copies always shared an outcome. Every published
+  count ("74 pending", "70 pre-registered bets") was inflated and every CI was
+  narrow by ~sqrt(2). Fixed by `ledger.void_superseded_rows`, run
+  unconditionally inside `recommend`. Eighth bug of this shape.
+- **That repair moved headline ROI from -13.06% to +0.51%, and nothing
+  improved.** No bet changed outcome, no price moved. The whole swing is
+  re-weighting: the one NFL win (SF @ LA at 2.778) contributed +11.85pp in a
+  book of 15 and contributes **+22.22pp** in a book of 8. Split by sport, EPL
+  is **-24.81%** on 7 bets and NFL is +177.78% on n=1.
+- **`closing_odds_decimal` has never held a closing price.** CLV cuts at the
+  last pre-kickoff snapshot; the schedule fires once daily at ~06:00Z and both
+  leagues kick off 14:00-17:00Z, so every "closing" price is a mid-morning one
+  -- **T-7.8h** for the settled EPL cohort, **T-10.8h** for tonight's NFL
+  slate. Measured drift in the quiet days beforehand is small (NFL mean
+  |move| 0.0013 over the last full day), but the project holds **zero**
+  captures inside the final 8 hours of any settled game, so that bounds
+  nothing about the window where lines actually move. Not a code defect and
+  not counted in the bug tally; a cadence limit, and cadence is owner-set.
+- **Run 4's pre-registered prediction, restated over the 36 distinct wagers
+  its "70 bets" actually were:** 15.19 claimed / **11.28** selection-corrected
+  / 12.48 market-implied. The restatement sharpens the NFL leg -- corrected
+  (7.79) now sits clearly below market-implied (9.21), so the hypotheses
+  separate. 8 resolved (2 wins), 28 open, 11 of them kicking off tonight.
 - **The model loses at both venues, and the exchange is the dearer one.**
-  Every ROI here was model-vs-sportsbook; we would trade on Kalshi. Moving the
-  NFL sample to the exchange takes ROI from **-8.21% to -11.48%**. The tighter
-  book is worth +2.1pp; the trading fee gives back -5.4pp. See
+  Moving the NFL sample to Kalshi takes ROI from **-8.21% to -11.48%**. The
+  tighter book is worth +2.1pp; the trading fee gives back -5.4pp.
   `cli venue-report`.
 - **Why the cheaper venue costs more:** a sportsbook's vig is proportional, so
   its toll is flat at ~3.2% of stake at every price. Kalshi's fee is quadratic
   in notional, so as a fraction of *stake* it is `rate x (1 - price)` -- 3.3%
   on a 70c favourite, **10.6% below 15c**. The bet rule places **88.6% of its
-  bets below even money**. It sits at the expensive end of that curve.
-- **The result does not depend on the one number that could not be verified.**
-  Kalshi's API gives the fee's shape but not its coefficient, so the rate is a
-  parameter and the run reports the range: NFL ROI is negative at every rate
-  **including zero** (-6.10%).
+  bets below even money**. NFL ROI is negative at every fee rate **including
+  zero** (-6.10%), so the conclusion does not rest on the one coefficient
+  Kalshi's API will not expose.
 - **The betting rule, not the rating engine, is the main defect.**
   Unconditionally NFL Elo is roughly calibrated. Conditional on a side being
   *bet* it overstates its win probability by **13.7 points**, in every
   probability bucket; on sides it *passes* it understates by 9.3. That is the
-  winner's curse: the rule stakes money precisely where the model disagrees
-  with a more accurate forecast. See `cli selection-audit`.
+  winner's curse. `cli selection-audit`.
 - **Elo carries no information the closing line lacks.** Blending
   `w*model + (1-w)*market` is optimised at **w = 0** for NFL, with log-loss
-  monotonically worse in w; EPL lands on w = 0 for 5 of 6 holdout seasons and
-  the 6th improves by 0.0002, CI [-0.0021, +0.0017]. A parameter sweep can
-  luck into a good score; this cannot.
+  monotonically worse in w; EPL lands on w = 0 for 5 of 6 holdout seasons.
 - **150 model configurations backtested. None beat the market.** Nothing
   adopted, `live_enabled` is `false` everywhere.
 - **EPL's +8.27% ROI is retired.** Re-run with each season as holdout it is
-  1 of 6 positive; pooled **-8.30%**, sd 9.33pp. At the exchange the same
-  holdout is **-2.85%**.
-- **Every logged edge was overstated by roughly the fee** -- 5.39pp on the open
-  book. `edge_after_fee_pct` now records it per row. It is reported, not
-  enforced: see "The fee is reported, not enforced" below.
-- Seven bugs of one shape found so far, all a value that was not what the
-  surrounding code assumed -- most recently a quote that was not a pre-game
-  price, and a sort key that was `str` and `int64` at once. The seventh changed
-  no published number and is flagged as such rather than padding the count.
-  See "Known-bad numbers" below.
+  1 of 6 positive; pooled **-8.30%**, sd 9.33pp.
+- Eight bugs of one shape so far, all a value that was not what the
+  surrounding code assumed. See "Known-bad numbers" below.
 
 ## Why these data sources
 
@@ -90,6 +97,7 @@ src/sportsedge/
                 sweep.py (parameter grid vs the closing line)
                 selection.py (winner's-curse audit + model-vs-market blend)
   betting/      edge.py (de-vig, EV, Kelly), ledger.py (bets/ledger.csv)
+                scorecard.py (settled bets vs model AND market, effective n)
                 liquidity.py (is this quote fillable?), recommend.py (model vs market)
                 settle.py (resolve bets, compute CLV)
   journal/      entry.py (dated markdown journal entries)
@@ -191,7 +199,7 @@ line it is betting into.
 
 ```bash
 pip install -e ".[dev]"
-pytest                                  # 57 tests, no network needed
+pytest                                  # 176 tests, no network needed
 cp .env.example .env                    # only needed for optional sources
 python -m sportsedge.cli kalshi-nfl     # live NFL market snapshot, no key needed
 python -m sportsedge.cli kalshi-epl     # live EPL market snapshot, no key needed
@@ -211,7 +219,18 @@ python -m sportsedge.cli settle               # resolve finished games, fill CLV
                                               # settled before the stats source
                                               # published their kickoff
 python -m sportsedge.cli verify-settlements   # cross-check Kalshi vs stats source
+python -m sportsedge.cli scorecard            # model vs market vs reality on
+                                              # settled bets, with effective_n
 ```
+
+`scorecard` is the one that answers the project's actual question. A low win
+rate is not evidence against the model -- the rule bets longshots, so a low win
+rate is what a *correct* model looks like. The test is whether the model's
+probabilities beat the closing line's **on the bets the model chose**, which is
+the narrowest place the two disagree and the only place money moves. It reports
+both, plus an exact Poisson-binomial P(X <= k) so the reader sees the
+expectation next to the tail probability, and counts `effective_n` on distinct
+`(contract, selection)` wagers rather than ledger rows.
 
 `recommend` is idempotent per (contract, model version), so re-running on a
 schedule won't inflate the bet count.
@@ -276,6 +295,31 @@ construction); no price, stake, status, selection or `pricing_version` moves.
 future run moves the threshold as a `p3` bump.
 
 ## Known-bad numbers (withdrawn)
+
+**Every bet count published before 2026-09-13 run 7 -- inflated.** Not a wrong
+price but a wrong *population*: `ledger.existing_keys` includes
+`pricing_version` so that a pricing bump makes an open contract eligible to be
+priced again, which is correct, but re-pricing is a replacement and the code
+only ever performed the insert. The 2026-09-11 p1 -> p2 bump therefore
+duplicated 35 wagers rather than replacing them, and both copies always carried
+the same outcome. 75 non-void rows were **40 distinct wagers**; "74 pending"
+was 32, and run 4's "70 pre-registered bets" were **36**. Point estimates
+survive (each pair scales claimed and realized identically) but every n was
+doubled and every CI was narrow by ~sqrt(2). NFL looked handled only because
+its model version happened to move at the same time and *that* path did void
+its predecessors. Repaired by voiding the superseded half -- newest
+`pricing_version` wins, settled duplicates included, since that is where the
+double-count reaches win rate and ROI. Audited cell by cell: only `status`,
+`result_logged_at` and `notes` moved. Fixed by `ledger.void_superseded_rows`,
+run unconditionally inside `recommend`; `tests/test_superseded_void.py`.
+
+**Headline ROI of -13.06% -- superseded, and not by an improvement.** The
+de-duplication above takes it to +0.51%. Nothing got better: no bet changed
+outcome and no price moved, but the single NFL win went from 1/15 of the book
+to 1/8, taking its own ROI contribution from +11.85pp to +22.22pp. EPL alone is
+-24.81% on 7 bets. Neither figure is a result at these sample sizes; the point
+of recording both is that a correction moved the headline in the flattering
+direction and that is exactly when to distrust it.
 
 **Two EPL bets from 2026-09-12 run 6 -- voided.** Liverpool v Fulham and
 Chelsea v Hull were priced at 15:11Z against fixtures that kicked off at 14:00Z,
@@ -382,11 +426,21 @@ corrupts the record.
 - ~~Build the Kalshi-venue backtest~~ -- **done in run 5**
   (`backtest/kalshi_engine.py`). The exchange is the *dearer* venue: NFL ROI
   -8.21% at the sportsbook, -11.48% simulated at Kalshi.
-- **Run 4's pre-registered prediction starts resolving 2026-09-12 evening**
-  (14 EPL) and 2026-09-13 (49 NFL): ~30 wins if the claimed edges are real,
-  ~22 if the selection audit is right. This is the first real evidence the
-  project will produce. Settle it and report the count honestly whichever way
-  it falls, and move nothing in the pricing pipeline until it has.
+- **Run 4's pre-registered prediction is resolving, restated over the 36
+  distinct wagers its "70 bets" actually were:** 15.19 claimed / 11.28
+  selection-corrected / 12.48 market-implied. 8 resolved (2 wins, both legs
+  consistent with every hypothesis at this n), 28 open, 11 of them settling
+  tonight. Report the count honestly whichever way it falls, and move nothing
+  in the pricing pipeline until the NFL leg has resolved.
+- **The 7 settled EPL results are single-sourced.** `verify-settlements`
+  cannot cross-check them until football-data.co.uk publishes the 2026-09-12
+  fixtures; they currently rest on Kalshi's settlement alone. Re-run it.
+- **Snapshot cadence is the binding constraint on CLV, and it is
+  owner-controlled.** The schedule fires once daily at ~06:00Z against slates
+  that start 14:00-17:00Z, so `closing_odds_decimal` holds a T-8h to T-11h
+  price and there are zero captures inside the final 8 hours of any settled
+  game. Until that changes, every CLV number here should be read with that
+  attached.
 - **Verify the first backfilled CLV by hand** before trusting the aggregate.
   `backfill_clv` is tested but has never run against real settled rows, and a
   column that fills with plausible-looking numbers is precisely this project's
