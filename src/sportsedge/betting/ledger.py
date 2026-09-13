@@ -5,6 +5,7 @@ to open, diff in git, and eyeball for bias."""
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -119,6 +120,11 @@ def existing_keys() -> set[tuple]:
     de-vig, ask-vs-mid -- left existing rows in place and refused to re-price
     them, because the model string had not moved. That is how 12 EPL rows
     survived the 2026-09-10 liquidity fix that voided their NFL counterparts.
+
+    That key makes a contract eligible for re-pricing after a version bump.
+    It does NOT retire the row the bump superseded -- see
+    `void_superseded_rows`, which is the other half and was missing until
+    2026-09-13.
     """
     df = _load()
     if df.empty or "market_ticker" not in df.columns:
@@ -128,6 +134,88 @@ def existing_keys() -> set[tuple]:
         for _, r in df.iterrows()
         if r.get("market_ticker")
     }
+
+
+def void_superseded_rows(version_order: "Sequence[str]", *,
+                         dry_run: bool = False) -> dict:
+    """Void rows that a later `pricing_version` has already re-priced.
+
+    Re-pricing is a REPLACEMENT, and until 2026-09-13 this codebase only ever
+    did the insert half of it. `existing_keys` includes `pricing_version`
+    precisely so that a bump makes a contract eligible to be logged again --
+    but nothing ever retired the row it replaced, so both halves stayed open
+    and both were counted.
+
+    The p1 -> p2 bump therefore did not re-price 35 wagers, it duplicated
+    them: 75 non-void rows were 40 distinct (contract, selection, model)
+    wagers. Every count the project published over that ledger -- "74
+    pending", "70 pre-registered bets", n in every confidence interval -- was
+    inflated, and the CIs were narrow by a factor of ~sqrt(2) because each
+    wager was being counted as two independent trials of itself. Both halves
+    of a pair always share an outcome; they are one bet written down twice.
+
+    Which half survives is not a free choice. `pricing_version` asserts that
+    the later pipeline is the correct one and the earlier is superseded, so
+    the newest version wins and the older is voided. That is the same
+    mechanism, and the same direction, as the 28 NFL rows voided by the
+    v1 -> v2 model bump on 2026-09-10.
+
+    Settled rows are voided too, deliberately. A settled duplicate is exactly
+    where the double-count does its damage -- it lands in win rate and ROI --
+    and leaving it in to avoid touching a result would keep the defect in the
+    only numbers anyone reads.
+
+    `version_order` is passed in, oldest first, rather than derived by sorting
+    the strings: 'p10' sorts before 'p2' and this repo has now been bitten
+    seven times by a value that was not the type or order the surrounding code
+    assumed. A group containing a version not in that list is left untouched
+    and reported under `unorderable` -- guessing at the order is how a correct
+    row gets voided in favour of a superseded one.
+    """
+    rank = {v: i for i, v in enumerate(version_order)}
+    df = _load()
+    if df.empty or "market_ticker" not in df.columns:
+        return {"voided": 0, "groups": 0, "unorderable": [], "changes": []}
+
+    changes: list[dict] = []
+    unorderable: list[tuple] = []
+    groups = 0
+    live_mask = df["status"] != "void"
+    for key, idx in df[live_mask].groupby(
+            ["market_ticker", "selection", "model_version"], dropna=False).groups.items():
+        if len(idx) < 2:
+            continue
+        groups += 1
+        versions = [df.loc[i, "pricing_version"] for i in idx]
+        if any(v not in rank for v in versions):
+            unorderable.append((key, versions))
+            continue
+        newest = max(rank[v] for v in versions)
+        for i in idx:
+            if rank[df.loc[i, "pricing_version"]] == newest:
+                continue
+            changes.append({
+                "bet_id": df.loc[i, "bet_id"],
+                "market_ticker": key[0],
+                "selection": key[1],
+                "superseded_version": df.loc[i, "pricing_version"],
+                "superseded_by": version_order[newest],
+                "status_before": df.loc[i, "status"],
+            })
+            if not dry_run:
+                df.loc[i, "status"] = "void"
+                df.loc[i, "result_logged_at"] = datetime.now(timezone.utc).isoformat()
+                df.loc[i, "notes"] = (
+                    f"voided: superseded by the {version_order[newest]} re-pricing of the "
+                    f"same contract and selection. Re-pricing replaces a row; until "
+                    f"2026-09-13 it only ever inserted one, so this wager was counted "
+                    f"twice. No price, selection or outcome is disputed -- the surviving "
+                    f"row carries the same bet at the current pricing version."
+                )
+    if not dry_run and changes:
+        _save(df)
+    return {"voided": len(changes), "groups": groups,
+            "unorderable": unorderable, "changes": changes}
 
 
 def backfill_after_fee_edges(rate: float, *, dry_run: bool = False) -> dict:

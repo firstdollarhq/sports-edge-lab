@@ -18,6 +18,7 @@
                                                       #  rows settled before the
                                                       #  stats source caught up)
     python -m sportsedge.cli verify-settlements       # cross-check Kalshi vs stats
+    python -m sportsedge.cli scorecard                 # model vs market vs reality
     python -m sportsedge.cli ledger-summary
 """
 from __future__ import annotations
@@ -37,6 +38,7 @@ from sportsedge.backtest.engine import backtest_nfl, backtest_soccer
 from sportsedge.backtest import sweep, selection, kalshi_engine
 from sportsedge.betting import liquidity, recommend as recommend_mod, settle as settle_mod
 from sportsedge.betting import ledger as ledger_mod
+from sportsedge.betting import scorecard
 from sportsedge.betting.ledger import summarize
 
 SPORT_TO_LEAGUE_KEY = {"nfl": "nfl", "soccer": "epl"}
@@ -363,6 +365,13 @@ def cmd_recommend(args):
                   f"model={r['model_prob']:.3f} fair={r['market_fair_prob']:.3f} "
                   f"ask={r['price_ask']:.2f} edge={r['edge_pct']:+6.1f}% "
                   f"after-fee={after_s}")
+
+    # Retire whatever this run's pricing version has replaced. Unconditional,
+    # and after logging rather than before, so a version bump can never again
+    # leave both halves of a re-priced wager open at once.
+    sup = ledger_mod.void_superseded_rows(
+        recommend_mod.PRICING_VERSIONS, dry_run=args.dry_run)
+    out["superseded_voided"] = {k: sup[k] for k in ("voided", "groups", "unorderable")}
     print(json.dumps(out, indent=2, default=str))
 
 
@@ -393,6 +402,10 @@ def cmd_verify_settlements(args):
 
 def cmd_ledger_summary(_args):
     print(json.dumps(summarize(), indent=2, default=str))
+
+
+def cmd_scorecard(args):
+    print(json.dumps(scorecard.summarize(tuple(args.sports)), indent=2, default=str))
 
 
 def main():
@@ -475,6 +488,11 @@ def main():
     p = sub.add_parser("verify-settlements")
     p.add_argument("--sports", nargs="+", default=["nfl", "soccer"])
     p.set_defaults(func=cmd_verify_settlements)
+
+    p = sub.add_parser("scorecard",
+                       help="settled bets vs what the model AND the market expected")
+    p.add_argument("--sports", nargs="+", default=["nfl", "soccer"])
+    p.set_defaults(func=cmd_scorecard)
 
     p = sub.add_parser("ledger-summary")
     p.set_defaults(func=cmd_ledger_summary)

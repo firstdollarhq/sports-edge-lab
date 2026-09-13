@@ -61,7 +61,20 @@ MIN_ASK = 0.01
 # Bump this whenever pricing behaviour changes, and re-price open bets.
 #   p1: pre-2026-09-11. Liquidity gate without the relative-width check.
 #   p2: relative-width gate (5%), ask pricing, kickoff-correct CLV cutoff.
-PRICING_VERSION = "p2"
+#
+# Declared oldest-first, and NOT derived by sorting these strings: at p10 a
+# lexicographic sort puts the newest pipeline second-oldest, and voiding the
+# wrong half of a re-priced pair is worse than not voiding at all.
+PRICING_VERSIONS = ("p1", "p2")
+PRICING_VERSION = PRICING_VERSIONS[-1]
+
+# Re-pricing is a replacement, not an append. Bumping PRICING_VERSION makes a
+# contract eligible to be logged again (ledger.existing_keys); retiring the row
+# that replaced is the other half, and it was missing from 2026-09-11 until
+# 2026-09-13, which is how the p1 -> p2 bump duplicated 35 wagers instead of
+# re-pricing them. `ledger.void_superseded_rows` is now run unconditionally at
+# the end of every `recommend`, for the same reason `backfill_clv` is: a
+# repair someone has to remember to invoke is how the defect returns.
 
 # Kalshi's trading fee, as a coefficient on the published quadratic form
 # fee = rate * price * (1 - price) per $1 contract.
