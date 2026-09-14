@@ -347,9 +347,13 @@ cleared the first, and then found the change is not worth making anyway.
 
 The backfill is therefore strictly derived (`market_odds_decimal` is 1/ask by
 construction); no price, stake, status, selection or `pricing_version` moves.
-`test_backfill_after_fee_is_derived_not_a_repricing` asserts that, and
-`test_fee_does_not_change_which_bets_are_flagged` is the tripwire for when a
-future run moves the threshold as a `p3` bump.
+`test_backfill_after_fee_is_derived_not_a_repricing` asserts that.
+`test_fee_does_not_change_which_bets_are_flagged` and
+`test_threshold_still_tests_the_pre_fee_edge` pin the decision above: a side
+whose edge clears the threshold before the fee but not after it must still be
+flagged. They pin the behaviour, not the opinion — a future run with a better
+reason may still move it, as a `p3` bump, after clearing the deployment gate
+in backtest.
 
 ## Known-bad numbers (withdrawn)
 
