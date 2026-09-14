@@ -47,7 +47,31 @@ COLUMNS = [
     # Both are None on rows written before 2026-09-12.
     "edge_after_fee_pct",
     "fee_assumption",
+    # How many hours before kickoff the quote behind `clv_pct` was captured.
+    #
+    # CLV is only a skill signal if the reference really is the close. Before
+    # the capture cron (2026-09-13) the best reference this project held sat
+    # 7-11h out, and run 10 measured what that does: across the 23 settled
+    # rows, the 9 with a stale reference average +4.04% CLV with NOT ONE
+    # negative reading, while the 14 with a reference inside an hour average
+    # -1.41%. The split holds WITHIN the EPL leg as well as between leagues,
+    # so it is a property of the reference and not of the sport.
+    #
+    # Storing the lag is what stops that from having to be rediscovered by
+    # hand: `_summarize_frame` reports CLV over the rows where the reference
+    # is real, and the stale rows separately, instead of averaging the two
+    # into a number that describes neither.
+    #
+    # None on rows settled before 2026-09-14, and on rows with no CLV at all.
+    "clv_reference_lag_h",
 ]
+
+# A reference captured within this many hours of kickoff counts as a genuine
+# closing price. One hour is not arbitrary: `line-movement` measures the mean
+# absolute move inside the final two hours at 0.004 (max one cent) across 26
+# NFL contracts, so a quote from inside that window and the true close differ
+# by less than the tick size.
+CLV_REFERENCE_MAX_LAG_H = 1.0
 
 # Shadow rows record what an unvalidated model *would* have done. They are
 # evidence, not results, so they are reported separately and never folded into
@@ -103,6 +127,8 @@ def add_bet(*, sport: str, league: str, game_id: str, matchup: str, market: str,
         "market_fair_prob": market_fair_prob, "expiration_time": expiration_time,
         "kickoff_utc": kickoff_utc, "pricing_version": pricing_version,
         "edge_after_fee_pct": edge_after_fee_pct, "fee_assumption": fee_assumption,
+        # Filled at settlement, when there is a closing quote to measure against.
+        "clv_reference_lag_h": None,
     }
     df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
     _save(df)
@@ -295,7 +321,7 @@ def _summarize_frame(df: pd.DataFrame) -> dict:
     }
     if df.empty or settled.empty:
         return {**base, "win_rate": None, "roi_pct": None, "avg_clv_pct": None,
-                "clv_positive_rate": None}
+                "clv_positive_rate": None, **_clv_by_reference_quality(settled)}
 
     decided = settled[settled["status"] != "push"]
     wins = (decided["status"] == "won").sum()
@@ -306,8 +332,48 @@ def _summarize_frame(df: pd.DataFrame) -> dict:
         **base,
         "win_rate": wins / len(decided) * 100 if len(decided) else None,
         "roi_pct": (returned - staked) / staked * 100 if staked else None,
+        # Kept for continuity with every run before 2026-09-14, and NOT the
+        # number to quote: it averages real closes together with references
+        # from 8 hours out, which run 10 showed have opposite signs.
         "avg_clv_pct": clv.mean() if not clv.empty else None,
         "clv_positive_rate": (clv > 0).mean() * 100 if not clv.empty else None,
+        **_clv_by_reference_quality(settled),
+    }
+
+
+def _clv_by_reference_quality(settled: pd.DataFrame) -> dict:
+    """CLV over rows whose reference really is a close, and the rest apart.
+
+    Rows settled before the lag was recorded have no `clv_reference_lag_h`.
+    They are reported as `clv_unknown_reference_n` rather than being assumed
+    good -- silently counting them as real closes is exactly the error this
+    split exists to prevent.
+    """
+    empty = {"avg_clv_pct_real_close": None, "clv_real_close_n": 0,
+             "avg_clv_pct_stale_reference": None, "clv_stale_reference_n": 0,
+             "clv_unknown_reference_n": 0,
+             "clv_reference_max_lag_h": CLV_REFERENCE_MAX_LAG_H}
+    if settled.empty or "clv_pct" not in settled.columns:
+        return empty
+
+    rows = settled[settled["clv_pct"].notna()]
+    if rows.empty:
+        return empty
+
+    lag = (pd.to_numeric(rows.get("clv_reference_lag_h"), errors="coerce")
+           if "clv_reference_lag_h" in rows.columns
+           else pd.Series([None] * len(rows), index=rows.index, dtype="float64"))
+    clv = pd.to_numeric(rows["clv_pct"], errors="coerce")
+
+    real = clv[lag.notna() & (lag <= CLV_REFERENCE_MAX_LAG_H)]
+    stale = clv[lag.notna() & (lag > CLV_REFERENCE_MAX_LAG_H)]
+    return {
+        "avg_clv_pct_real_close": real.mean() if not real.empty else None,
+        "clv_real_close_n": int(len(real)),
+        "avg_clv_pct_stale_reference": stale.mean() if not stale.empty else None,
+        "clv_stale_reference_n": int(len(stale)),
+        "clv_unknown_reference_n": int(lag.isna().sum()),
+        "clv_reference_max_lag_h": CLV_REFERENCE_MAX_LAG_H,
     }
 
 

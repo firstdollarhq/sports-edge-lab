@@ -244,17 +244,45 @@ def test_venue_from_snapshots_uses_the_measured_spread(snapshot_root):
     assert v.half_spread == pytest.approx(0.005)
 
 
-# -- the unverified constant ---------------------------------------------------
+# -- the fee coefficient -------------------------------------------------------
 
 
-def test_fee_rate_is_flagged_unverified():
-    """The fee's shape is confirmed from the Kalshi API; its coefficient is not.
+def test_fee_rate_derives_from_kalshis_worked_example():
+    """`DEFAULT_FEE_RATE` must be re-derivable, not merely asserted.
 
-    If a future run verifies the rate, flip the flag -- but until then nothing
-    may present a fee-dependent number as settled, and `fee_sensitivity` exists
-    so conclusions can be checked at fee=0.
+    Kalshi publishes no coefficient, but its fee-rounding page works an example
+    with both sides of the equation in it. Inverting that example is the whole
+    of the verification, so it is re-run here rather than left as a claim in a
+    docstring that nothing checks.
     """
-    assert ke.FEE_RATE_IS_VERIFIED is False
+    contracts, price, model_fee = ke.FEE_RATE_FIXTURE
+    assert ke.fee_rate_from_example(contracts, price, model_fee) == pytest.approx(
+        ke.DEFAULT_FEE_RATE, abs=1e-12)
+    assert ke.FEE_RATE_IS_VERIFIED is True
+
+
+def test_other_contract_splits_of_the_example_are_not_round_rates():
+    """Why the one-contract reading is the right one.
+
+    The example gives revenue, not (contracts, price) separately. Only the
+    whole-contract split gives a round published rate; the alternatives give
+    ragged numbers, which is what makes the inversion unambiguous rather than
+    one of several equally good fits.
+    """
+    _, price, model_fee = ke.FEE_RATE_FIXTURE
+    revenue = price  # one contract
+    for contracts in (5, 11, 55):
+        rate = ke.fee_rate_from_example(contracts, revenue / contracts, model_fee)
+        assert abs(rate - ke.DEFAULT_FEE_RATE) > 1e-3
+
+
+def test_fee_is_applied_on_top_of_the_ask():
+    """The quadratic sits on the ask, not on the fair probability."""
+    pricer = ke.KalshiPricer(half_spread=0.01, fee_rate=ke.DEFAULT_FEE_RATE)
+    fair = 0.40
+    ask = fair + 0.01
+    assert pricer.buy_price(fair) == pytest.approx(
+        ask + ke.DEFAULT_FEE_RATE * ask * (1 - ask))
 
 
 def test_fee_sensitivity_spans_zero(games):
@@ -271,5 +299,5 @@ def test_compare_venues_reports_both_and_the_delta(games):
     res = ke.compare_venues(lambda g, **kw: backtest_nfl(g, NflEloModel(), **kw),
                             games, sport="nfl", root="/nonexistent", edge_threshold=0.03)
     assert res["simulated_at_venue"] is True, "must never read as an observed return"
-    assert res["fee_rate_verified"] is False
+    assert res["fee_rate_verified"] is True
     assert res["sportsbook"]["n_bets"] >= 0 and res["kalshi_simulated"]["n_bets"] >= 0

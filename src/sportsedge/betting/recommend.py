@@ -79,30 +79,46 @@ PRICING_VERSION = PRICING_VERSIONS[-1]
 # Kalshi's trading fee, as a coefficient on the published quadratic form
 # fee = rate * price * (1 - price) per $1 contract.
 #
-# WHY THIS IS REPORTED AND NOT ENFORCED. Two separate reasons, and both have to
-# clear before the edge threshold moves onto the fee-inclusive number:
+# WHY THIS IS REPORTED AND NOT ENFORCED.
 #
-# 1. The rate is unverified. Kalshi's API confirms the SHAPE
-#    (fee_type="quadratic_with_maker_fees", fee_multiplier=1 on both
-#    KXNFLGAME and KXEPLGAME, checked 2026-09-12) but exposes no coefficient,
-#    and the docs page serves no text to a plain fetch. Enforcing a threshold
-#    against an unverified constant writes that constant into the permanent
-#    bet record.
+# This started as two blockers on moving the threshold onto the fee-inclusive
+# number. Run 10 (2026-09-14) cleared the first, left the second standing, and
+# then found that the change is not worth making anyway.
 #
-# 2. Changing what gets bet would break a pre-registered prediction that is
-#    about to resolve. Run 4 wrote down, before the games: ~30 wins if the
-#    model's claimed edges are real, ~22 if the selection audit is right. The
-#    70 open bets ARE that test and the week-1 slate starts 2026-09-13.
-#    Re-pricing them into a different population the day before they settle
-#    would quietly dispose of the one falsifiable commitment this project has
-#    made. That is not a cost worth paying for a one-day head start.
+# 1. CLEARED. The rate is verified at 0.07, derived from Kalshi's own worked
+#    example in docs.kalshi.com/getting_started/fee_rounding and pinned by
+#    `backtest.kalshi_engine.FEE_RATE_FIXTURE`. See the "Fees" note there.
 #
-# So: report it, log it on every new row, leave the open bets alone, and let a
-# run after the slate settles decide whether the threshold moves. When it does,
-# that is a PRICING_VERSION bump (p3) and an explicit re-pricing, not a quiet
-# change of formula.
+# 2. STILL STANDING until 2026-09-21. Bumping PRICING_VERSION re-prices open
+#    bets, and `ledger.void_superseded_rows` would void the 13 pre-registered
+#    wagers (12 NFL, 1 EPL) still open from run 4's cohort, plus run 9's
+#    pre-registration over the same 13. Disposing of a falsifiable commitment
+#    one week before it resolves is the same mistake this note was written to
+#    prevent in run 5; the slate resolving is what lifts it.
+#
+# 3. AND THE CHANGE IS REJECTED ON THE EVIDENCE. Backtested at the simulated
+#    venue over 2018-24 NFL / 1920-2425 EPL, selecting on the after-fee edge
+#    and settling at the same price as today:
+#
+#        NFL  p2 -10.09% (n=1724)  ->  p3 -11.48% (n=1556)   WORSE by 1.39pp
+#        EPL  p2 -11.07% (n= 373)  ->  p3  -8.99% (n= 283)   better by 2.08pp
+#
+#    The two legs disagree in sign at every fee rate from 0.01 to 0.10, neither
+#    comes near beating the closing line, and the deployment gate asks for the
+#    latter, not for an improvement on p2. The mechanism is the reason to care:
+#    the bets p3 removes from the NFL book are the LOW-claimed-edge ones
+#    (median +4.72% pre-fee, median price 47c), and run 9 measured that the
+#    low-edge half of the settled book is the half whose claimed edge is least
+#    overstated. A fee-inclusive minimum is still a minimum on claimed edge, so
+#    it selects harder for the model's own overstatement -- run 4's selection
+#    gap, sharpened rather than repaired.
+#
+# So: report it, log it on every new row, and do not move the threshold onto it
+# while the model's probabilities are the broken part. Any future attempt is
+# still a PRICING_VERSION bump (p3) and an explicit re-pricing, and it should
+# clear the deployment gate in backtest first -- which this one does not.
 FEE_RATE_ASSUMPTION = 0.07
-FEE_RATE_IS_VERIFIED = False
+FEE_RATE_IS_VERIFIED = True
 
 
 def _decimal_odds(ask: float) -> float | None:

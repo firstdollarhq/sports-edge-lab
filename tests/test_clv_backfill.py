@@ -11,7 +11,7 @@ the committed snapshots the whole time.
 The tests that matter most here are the two that constrain what the pass may
 NOT do: it may not reach for the expiration when the kickoff is missing (that
 is the run-3 lookahead bug, one sport over), and it may not touch anything
-about the bet except the three closing-line columns.
+about the bet except the closing-line columns.
 """
 import pandas as pd
 import pytest
@@ -144,7 +144,8 @@ def test_backfill_changes_nothing_except_the_closing_line_columns(lab, monkeypat
     settle_mod.backfill_clv()
     after = ledger_mod._load().iloc[0].to_dict()
 
-    mutable = {"kickoff_utc", "closing_odds_decimal", "clv_pct"}
+    mutable = {"kickoff_utc", "closing_odds_decimal", "clv_pct",
+               "clv_reference_lag_h"}
     for col in before:
         if col in mutable:
             continue
@@ -215,3 +216,88 @@ def test_missing_snapshot_is_reported_distinctly_from_missing_kickoff(lab, monke
     assert res["changes"][0]["reason"] == "no snapshot captured before kickoff"
     # The kickoff is still recorded: it is what distinguishes the two cases.
     assert str(ledger_mod._load().iloc[0]["kickoff_utc"]).startswith("2026-09-12T14:00")
+
+
+# -- the reference lag ---------------------------------------------------------
+#
+# CLV compares the price we got to "the close". Before the capture cron the
+# best reference this project held sat 7-11h before kickoff, and run 10
+# measured that the sign of CLV flips with that lag: +4.04% mean over the 9
+# rows with a stale reference (not one negative), -1.41% over the 14 with a
+# reference inside the hour. Recording the lag is what lets the two be
+# reported apart instead of averaged into a number describing neither.
+
+
+def test_settlement_records_how_stale_the_reference_was(lab, monkeypatch):
+    """The quote is 7.81h before kickoff, and the row must say so."""
+    _settled_epl_bet()
+    _stats_table_has_the_match(monkeypatch, True)
+
+    res = settle_mod.backfill_clv()
+
+    assert res["filled"] == 1
+    row = ledger_mod._load().iloc[0]
+    # 06:11:15 -> 14:00:00 is 7h 48m 45s.
+    assert float(row["clv_reference_lag_h"]) == pytest.approx(7.8125)
+    assert res["changes"][0]["clv_reference_lag_h"] == pytest.approx(7.8125)
+
+
+def test_lag_is_backfilled_onto_rows_that_already_have_clv(lab, monkeypatch):
+    """The cohort that produced the finding settled before the column existed.
+
+    Those rows have a CLV and no lag, so the recovery pass has to reach them
+    too -- otherwise the split has nothing to report on for the only 23 rows
+    the project has.
+    """
+    _settled_epl_bet(kickoff_utc=KICKOFF, clv=12.5)
+    _stats_table_has_the_match(monkeypatch, True)
+
+    res = settle_mod.backfill_clv()
+
+    # Nothing to fill on the CLV pass -- this row already had one.
+    assert res["candidates"] == 0 and res["filled"] == 0
+    assert res["reference_lags_filled"] == 1
+    row = ledger_mod._load().iloc[0]
+    assert float(row["clv_reference_lag_h"]) == pytest.approx(7.8125)
+    # And the CLV it already carried is untouched.
+    assert float(row["clv_pct"]) == pytest.approx(12.5)
+
+
+def test_lag_backfill_never_restates_an_existing_clv(lab, monkeypatch):
+    """A later snapshot must not silently re-price a settled row."""
+    _settled_epl_bet(kickoff_utc=KICKOFF, clv=99.0)
+    _stats_table_has_the_match(monkeypatch, True)
+
+    settle_mod.backfill_clv()
+
+    row = ledger_mod._load().iloc[0]
+    assert float(row["clv_pct"]) == pytest.approx(99.0)
+    assert pd.isna(row["closing_odds_decimal"])
+
+
+def test_summary_splits_clv_by_reference_quality(lab, monkeypatch):
+    """A real close and an 8-hour-old reference must not be averaged together."""
+    _settled_epl_bet(kickoff_utc=KICKOFF, clv=6.0)          # stale, 7.81h
+    df = ledger_mod._load()
+    df.loc[0, "clv_reference_lag_h"] = 7.8125
+    # A second row whose reference is a genuine close.
+    df.loc[1] = df.loc[0]
+    df.loc[1, "bet_id"] = "realclose"
+    df.loc[1, "clv_pct"] = -2.0
+    df.loc[1, "clv_reference_lag_h"] = 0.25
+    # A third from before the column existed: unknown, and never assumed good.
+    df.loc[2] = df.loc[0]
+    df.loc[2, "bet_id"] = "unknownref"
+    df.loc[2, "clv_pct"] = 40.0
+    df.loc[2, "clv_reference_lag_h"] = None
+    ledger_mod._save(df)
+
+    s = ledger_mod.summarize()["shadow"]
+
+    assert s["clv_real_close_n"] == 1
+    assert s["avg_clv_pct_real_close"] == pytest.approx(-2.0)
+    assert s["clv_stale_reference_n"] == 1
+    assert s["avg_clv_pct_stale_reference"] == pytest.approx(6.0)
+    assert s["clv_unknown_reference_n"] == 1
+    # The undifferentiated average still exists, and is none of the three.
+    assert s["avg_clv_pct"] == pytest.approx((6.0 - 2.0 + 40.0) / 3)

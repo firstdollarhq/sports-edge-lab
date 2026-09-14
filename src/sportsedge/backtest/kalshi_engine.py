@@ -61,14 +61,36 @@ instead. The fee's SHAPE is verified from the API -- `series/KXNFLGAME` and
 `fee_multiplier=1` (checked 2026-09-12) -- which is the published quadratic
 form, fee = rate * price * (1 - price) per $1 contract.
 
-The RATE is not verifiable from the API: no market, series or exchange
-endpoint exposes the coefficient, and the documentation page is a JavaScript
-shell that serves no text to a plain fetch (the PDF fetch returned HTTP 429).
-`DEFAULT_FEE_RATE` below is Kalshi's published taker rate as of training, and
-it is NOT confirmed by anything this run could read. So it is a parameter, and
-`fee_sensitivity` reports the result across a range including zero, so that no
-conclusion drawn here depends on the unverified number. If a future run can
-read the schedule, replace the constant and delete this paragraph.
+The RATE is now verified too, as of 2026-09-14, at **0.07** -- but not from
+any endpoint that states it. No market, series or exchange endpoint exposes
+the coefficient, kalshi.com/fees and the fee-schedule PDF both answer HTTP 429
+to a plain fetch, and the docs site's HTML is a JavaScript shell. What does
+serve plain text is the docs site's own markdown mirror (every page at
+docs.kalshi.com/<path> is also served at <path>.md, discoverable from
+/llms.txt), and `getting_started/fee_rounding.md` carries a worked example
+with both sides of the fee equation in it:
+
+    "a buy has -$0.055000 of signed revenue and a model fee of $0.00363825"
+
+Signed revenue for a buy is -price * contracts, so that is one contract at
+$0.055, and the quadratic form above inverts to a coefficient directly:
+
+    rate = 0.00363825 / (1 * 0.055 * 0.945) = 0.07   exactly
+
+The reading is unique in the way that matters: the other whole-contract splits
+of $0.055 (5 @ 1.1c, 11 @ 0.5c, 55 @ 0.1c) all give ragged coefficients
+(0.0669, 0.0665, 0.0662) rather than a round published rate. `FEE_RATE_FIXTURE`
+below pins the derivation so it is re-checked on every test run rather than
+resting on one session having read a docs page.
+
+This is the TAKER rate, which is the only one this project needs: the pricer
+lifts the ask on every simulated bet and `betting/recommend.py` prices at the
+ask for the same reason. Both series report `fee_type` with maker fees
+enabled, so a resting order would pay something different -- we never rest one.
+
+`fee_sensitivity` is kept even though the rate is now settled. It costs one
+backtest and it is what lets a conclusion be reported as robust to the
+coefficient rather than merely computed at it.
 
 Fees are modelled continuously. Kalshi rounds them up to the cent, which makes
 the real cost slightly worse than what is reported here, never better.
@@ -86,9 +108,24 @@ from sportsedge.betting.edge import devig_two_way
 from sportsedge.ingest import kickoff
 from sportsedge.storage import snapshots
 
-# See the "Fees" note above: shape verified, coefficient not.
+# See the "Fees" note above: shape AND coefficient both verified (2026-09-14).
 DEFAULT_FEE_RATE = 0.07
-FEE_RATE_IS_VERIFIED = False
+FEE_RATE_IS_VERIFIED = True
+
+# Kalshi's own worked example, from docs.kalshi.com/getting_started/fee_rounding.
+# Kept as data so `test_fee_rate_derives_from_kalshis_worked_example` re-derives
+# DEFAULT_FEE_RATE from it on every run. If Kalshi ever changes the rate, the
+# fixture is what has to be re-read -- the constant alone would drift silently.
+#   (contracts, price_dollars, model_fee_dollars)
+FEE_RATE_FIXTURE = (1, 0.055, 0.00363825)
+
+
+def fee_rate_from_example(contracts: int, price: float, model_fee: float) -> float:
+    """Invert fee = rate * contracts * price * (1 - price) for the rate."""
+    base = contracts * price * (1 - price)
+    if base <= 0:
+        raise ValueError("degenerate fee example")
+    return model_fee / base
 
 # Fallback half-spread, in dollars, used only when no captured snapshot covers
 # a sport. The measured value from the live boards is ~0.005-0.007 for both.

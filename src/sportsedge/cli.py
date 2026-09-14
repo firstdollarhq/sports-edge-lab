@@ -254,7 +254,9 @@ def cmd_venue_report(args):
         res = kalshi_engine.compare_venues(fn, games, sport=sport,
                                            edge_threshold=args.edge_threshold / 100)
         print(f"\n{'=' * 72}\n{label}  --  half-spread {res['half_spread']:.4f}, "
-              f"fee {res['fee_rate']:.3f} (UNVERIFIED), log-loss {res['log_loss']:.4f}\n"
+              f"fee {res['fee_rate']:.3f} "
+              f"({'verified' if res['fee_rate_verified'] else 'UNVERIFIED'}), "
+              f"log-loss {res['log_loss']:.4f}\n"
               f"{'=' * 72}")
         print(f"{'venue':<20} {'n':>6} {'win%':>7} {'ROI':>9} {'95% CI':>20} {'sig':>5}")
         for name, key in (("sportsbook (real)", "sportsbook"),
@@ -266,8 +268,9 @@ def cmd_venue_report(args):
                   f"{r['roi_pct']:+8.2f}% {ci:>20} {str(r['significant_at_95']):>5}")
         print(f"{'delta':<20} {res['bets_delta']:+6d} {'':>7} {res['roi_delta_pp']:+8.2f}pp")
 
-        print(f"\nfee sensitivity -- the coefficient is not verified, so read the SIGN "
-              f"across this range, not any single row:")
+        print(f"\nfee sensitivity -- the coefficient is verified at "
+              f"{kalshi_engine.DEFAULT_FEE_RATE:.2f}, so the matching row is the real "
+              f"one; the rest show how much the conclusion leans on it:")
         fs = kalshi_engine.fee_sensitivity(fn, games, sport=sport,
                                            edge_threshold=args.edge_threshold / 100)
         print(fs.to_string(index=False))

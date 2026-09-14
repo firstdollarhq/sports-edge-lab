@@ -22,14 +22,25 @@ honest, dated log of what was tried and what happened.
 - **The market beats the model on every scoring rule, on the bets the model
   itself chose.** Model log-loss **0.6535** vs market **0.6030**; Brier 0.2318
   vs 0.2057; model overstatement **+15.0pp** vs the market's +7.7pp.
-- **CLV reversed once the reference became real.** Mean CLV falls from run 8's
-  **+4.04%** to **+0.72%**, and the split by leg is the point: the 13 NFL
-  wagers, measured against a genuine **T-0.42h** close, read **-1.03%**, while
-  the 10 EPL wagers on a stale **T-7.75h** reference read +3.00%. Run 8
-  published +4.04% together with the reasons not to believe it; this is what
-  those reasons looked like when the real number arrived. **12 of 23 readings
-  are exactly 0.00%**, and CLV does not separate winners (+0.01%) from losers
-  (+0.98%) in this sample.
+- **CLV is a function of reference staleness, not of skill — and not of the
+  league either.** Run 9 split mean CLV by leg (NFL -1.03% on a real close,
+  EPL +3.00% on a stale one). Run 10 split it by the thing actually doing the
+  work, the **reference lag**, and the effect holds *within* the EPL leg as
+  well as between leagues:
+
+  | reference | n | mean CLV | pos / zero / neg |
+  |---|---|---|---|
+  | real close (≤1h) | 14 | **-1.41%** | 2 / 8 / 4 |
+  | stale (>1h) | 9 | **+4.04%** | 5 / 4 / **0** |
+
+  The 2 EPL wagers that *do* have a real close read **-3.19%**; the 8 stale
+  ones read +4.55%. Every positive reading this project has published came
+  from a reference that was not a close, and the stale cohort's +4.04% is
+  *exactly* run 8's old headline — which is what confirms the decomposition.
+  The lag is now stored per row (`clv_reference_lag_h`) and `ledger-summary`
+  reports the two cohorts apart, so the blended average can no longer be
+  quoted as a measurement. **12 of 23 readings are exactly 0.00%**, and CLV
+  does not separate winners (+0.01%) from losers (+0.98%) in this sample.
 - **The final hour is measured at last, on 26 contracts, and it barely moves.**
   Against a reference 25 minutes before kickoff: T-1h..T-2h mean |move|
   **0.0038**, median **0.000**, max 0.01, and **not one of 26 contracts moved
@@ -299,19 +310,40 @@ against the spread's ~1.7%), and `recommend.py` prices at the ask only. So
 `edge_pct` overstates every logged edge by roughly the fee — 5.39pp on the
 open book. `edge_after_fee_pct` and `fee_assumption` now record it per row.
 
-The threshold still tests `edge_pct`, deliberately, for two reasons:
+The threshold still tests `edge_pct`. That began as two blockers; run 10
+cleared the first, and then found the change is not worth making anyway.
 
-1. **The rate is unverified.** The API confirms
-   `fee_type="quadratic_with_maker_fees"` and `fee_multiplier=1` but exposes
-   no coefficient. Enforcing a threshold against a number nobody could read
-   writes it into the permanent bet record.
-2. **It would break a pre-registered prediction that settles 2026-09-13.**
-   Run 4 wrote down, before any game: ~30 wins if the claimed edges are real,
-   ~22 if the selection audit is right. The 70 open bets *are* that test.
-   Re-pricing them into a different population the day before they resolve
-   would dispose of the project's one falsifiable commitment — and in the
-   flattering direction, since the bets the fee cuts are the longshots the
-   audit predicts will lose.
+1. ~~**The rate is unverified.**~~ **Verified 2026-09-14 at exactly 0.07.** No
+   endpoint states the coefficient, but the docs site mirrors every page as
+   markdown (`docs.kalshi.com/<path>.md`, indexed in `/llms.txt`), and
+   `getting_started/fee_rounding.md` works an example carrying both sides of
+   the equation: a buy with `-$0.055000` signed revenue and a model fee of
+   `$0.00363825`. One contract at 5.5c inverts to
+   `0.00363825 / (0.055 × 0.945) = 0.07` exactly, and the other whole-contract
+   splits of that revenue give ragged rates (0.0669, 0.0665, 0.0662), so the
+   reading is unambiguous. Pinned by `kalshi_engine.FEE_RATE_FIXTURE` and
+   re-derived on every test run.
+2. **It would break a pre-registered prediction**, still, until 2026-09-21.
+   13 wagers from run 4's cohort (12 NFL, 1 EPL) are open, and run 9
+   pre-registered the same 13 again. A `PRICING_VERSION` bump re-prices open
+   bets, so `void_superseded_rows` would void them a week before they resolve.
+3. **And the change is rejected on the evidence.** Backtested at the simulated
+   venue, selecting on the after-fee edge and settling at the same price:
+
+   | leg | p2 (threshold pre-fee) | p3 (threshold post-fee) | |
+   |---|---|---|---|
+   | NFL | **-10.09%** (n=1724) | **-11.48%** (n=1556) | worse by 1.39pp |
+   | EPL | **-11.07%** (n=373) | **-8.99%** (n=283) | better by 2.08pp |
+
+   The legs disagree in sign at every fee rate from 0.01 to 0.10, and neither
+   comes near beating the closing line — which is what the deployment gate
+   asks for, not an improvement on p2. The mechanism is the reason to care:
+   the NFL bets p3 removes are the **low**-claimed-edge ones (median +4.72%
+   pre-fee, median price 47c), and run 9 measured the low-edge half of the
+   settled book as the half whose claimed edge is *least* overstated. A
+   fee-inclusive minimum is still a minimum on claimed edge, so it selects
+   harder for the model's own overstatement: run 4's selection gap sharpened,
+   not repaired.
 
 The backfill is therefore strictly derived (`market_odds_decimal` is 1/ask by
 construction); no price, stake, status, selection or `pricing_version` moves.
@@ -481,14 +513,25 @@ corrupts the record.
   the size of the whole effect being measured -- so the pre-cron CLV readings
   were misleading rather than merely imprecise. Still one high-liquidity NFL
   slate, so "quiet" is the best case, not the typical one.
-- **CLV reversed once the reference became real, and may not be a usable
-  signal at this venue at all.** Mean CLV fell from run 8's +4.04% to
-  **+0.72%** as 23 rows replaced 9. The leg with a genuine T-0.42h close (13
-  NFL wagers) reads **-1.03%**; the leg on a stale T-7.75h reference (10 EPL)
-  reads +3.00%. **12 of 23 readings are exactly 0.00%** and CLV does not
-  separate winners (+0.01%) from losers (+0.98%). Given a market whose entire
-  observed movement inside two hours is one cent, the open question is no
-  longer "is the CLV number believable" but "can CLV measure anything here".
+- **CLV may not be a usable signal at this venue at all, and every positive
+  reading so far came from a stale reference.** Run 10 split the 23 settled
+  rows by reference lag rather than by league: **≤1h reference, n=14, mean
+  -1.41%; >1h reference, n=9, mean +4.04% with not one negative reading.** The
+  split holds *within* the EPL leg (2 real closes read -3.19%, 8 stale read
+  +4.55%), so it is a property of the measurement, not the sport. **12 of 23
+  readings are exactly 0.00%** and CLV does not separate winners (+0.01%) from
+  losers (+0.98%). The lag is now stored per row and reported apart, so the
+  blended average cannot be quoted as a measurement. Given a market whose
+  entire observed movement inside two hours is one cent, the open question is
+  no longer "is the CLV number believable" but "can CLV measure anything
+  here". **Decide it once the real-close cohort is large enough to have a
+  usable standard error — not before.**
+- ~~Kalshi's fee coefficient is unread~~ -- **read and verified in run 10 at
+  exactly 0.07**, by inverting Kalshi's own worked example rather than finding
+  a page that states it. See "The fee is reported, not enforced" above.
+  Moving the threshold onto the fee-inclusive number (`p3`) was then
+  backtested and **rejected**: it makes NFL worse, the legs disagree in sign,
+  and neither clears the deployment gate.
 - ~~Measure the EPL expiry lag rather than assuming 3h~~ -- **measured in run
   8: exactly 3.00h on 13/13 contracts**, via ESPN kickoffs rather than waiting
   for football-data.co.uk. The assumed constant was right. NFL in the same

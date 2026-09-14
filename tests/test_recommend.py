@@ -3,6 +3,7 @@ pricing at the ask, and only betting when the model genuinely disagrees.
 """
 import pytest
 
+from sportsedge.backtest import kalshi_engine
 from sportsedge.betting import recommend
 
 
@@ -118,13 +119,38 @@ def test_fee_is_quadratic_and_regressive_in_stake():
     assert as_fraction_of_stake == sorted(as_fraction_of_stake, reverse=True)
 
 
-def test_fee_rate_is_flagged_unverified():
-    """Kalshi's API gives the fee's shape, not its coefficient.
+def test_fee_rate_is_verified_and_matches_the_backtest_constant():
+    """Verified 2026-09-14 by inverting Kalshi's own worked example.
 
-    While this is False, nothing may enforce a threshold against the rate or
-    present a fee-inclusive figure as settled.
+    The two constants are declared in different modules -- the live pricer and
+    the backtest venue -- and a backtest that priced the fee differently from
+    the recommender would make every venue number describe a book nobody bets.
     """
-    assert recommend.FEE_RATE_IS_VERIFIED is False
+    assert recommend.FEE_RATE_IS_VERIFIED is True
+    assert recommend.FEE_RATE_ASSUMPTION == kalshi_engine.DEFAULT_FEE_RATE
+
+
+def test_threshold_still_tests_the_pre_fee_edge():
+    """p3 was backtested in run 10 and REJECTED; the threshold stays pre-fee.
+
+    Verifying the fee rate cleared the stated blocker on moving the threshold
+    onto `edge_after_fee_pct`, so the next run to read that note needs the
+    reason it did not move anyway: at the simulated venue the change made NFL
+    worse (-10.09% -> -11.48%) by culling the low-claimed-edge bets, which run
+    9 measured as the least overstated half of the book.
+
+    This pins the behaviour, not the opinion: a side whose edge clears the
+    threshold before the fee but not after it must still be flagged.
+    """
+    # Home at 50c with the model at 52%: +4.00% before the fee, +0.48% after.
+    recs = recommend.recommend_nfl(
+        [_row("home", 0.48, 0.50), _row("away", 0.48, 0.50)],
+        _FixedNfl(0.52), edge_threshold=0.03)
+    straddling = [r for r in recs
+                  if r["edge_pct"] >= 3.0 > r["edge_after_fee_pct"]]
+    assert straddling, "fixture no longer straddles the fee; pick new prices"
+    for r in straddling:
+        assert r["edge_after_fee_pct"] < r["edge_pct"]
 
 
 def test_after_fee_edge_is_reported_and_lower():

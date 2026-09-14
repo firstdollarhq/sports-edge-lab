@@ -86,7 +86,7 @@ def settle_pending(*, sports: tuple[str, ...] = ("nfl", "soccer"),
 
         status = "won" if results[ticker] == "yes" else "lost"
         resolved_kickoff = _kickoff_for(bet)
-        closing = _closing_odds(bet)
+        closing, lag_h = _closing_quote(bet)
         clv = None
         if closing is not None and bet.get("market_odds_decimal"):
             clv = _clv_pct(float(bet["market_odds_decimal"]), closing)
@@ -96,6 +96,7 @@ def settle_pending(*, sports: tuple[str, ...] = ("nfl", "soccer"),
             "bet_id": bet["bet_id"], "matchup": bet.get("matchup"),
             "selection": bet.get("selection"), "status": status,
             "closing_odds_decimal": closing, "clv_pct": clv,
+            "clv_reference_lag_h": lag_h,
             "kickoff_utc": resolved_kickoff,
             "clv_missing_reason": None if clv is not None else (
                 "no kickoff in stats source" if resolved_kickoff is None
@@ -112,6 +113,8 @@ def settle_pending(*, sports: tuple[str, ...] = ("nfl", "soccer"),
                 df.loc[idx, "closing_odds_decimal"] = closing
             if clv is not None:
                 df.loc[idx, "clv_pct"] = clv
+            if lag_h is not None:
+                df.loc[idx, "clv_reference_lag_h"] = lag_h
 
     if not dry_run and settled:
         ledger_mod._save(df)
@@ -171,14 +174,21 @@ def backfill_clv(*, dry_run: bool = False) -> dict:
         df["status"].isin(ledger_mod.SETTLED_STATUSES) & df["clv_pct"].isna()
     ]
     if settled_no_clv.empty:
-        return {"candidates": 0, "filled": 0, "still_missing": 0, "changes": []}
+        # Still run the lag pass: rows that already HAVE a CLV are exactly the
+        # ones missing its reference lag, so returning early here would make
+        # the backfill a no-op on the only cohort that needs it.
+        lags_filled = _backfill_reference_lags(df, dry_run=dry_run)
+        if not dry_run and lags_filled:
+            ledger_mod._save(df)
+        return {"candidates": 0, "filled": 0, "still_missing": 0,
+                "reference_lags_filled": lags_filled, "changes": []}
 
     filled = 0
     changes = []
 
     for idx, bet in settled_no_clv.iterrows():
         resolved_kickoff = _kickoff_for(bet)
-        closing = _closing_odds(bet)
+        closing, lag_h = _closing_quote(bet)
         clv = None
         if closing is not None and bet.get("market_odds_decimal"):
             clv = _clv_pct(float(bet["market_odds_decimal"]), closing)
@@ -188,6 +198,7 @@ def backfill_clv(*, dry_run: bool = False) -> dict:
             "sport": bet.get("sport"), "status": bet.get("status"),
             "kickoff_utc": resolved_kickoff,
             "closing_odds_decimal": closing, "clv_pct": clv,
+            "clv_reference_lag_h": lag_h,
             "reason": None if clv is not None else (
                 "no kickoff in stats source" if resolved_kickoff is None
                 else "no snapshot captured before kickoff"),
@@ -206,16 +217,60 @@ def backfill_clv(*, dry_run: bool = False) -> dict:
                 df.loc[idx, "closing_odds_decimal"] = closing
             if clv is not None:
                 df.loc[idx, "clv_pct"] = clv
+            if lag_h is not None:
+                df.loc[idx, "clv_reference_lag_h"] = lag_h
 
-    if not dry_run and changes:
+    lags_filled = _backfill_reference_lags(df, dry_run=dry_run)
+
+    if not dry_run and (changes or lags_filled):
         ledger_mod._save(df)
 
     return {"candidates": len(settled_no_clv), "filled": filled,
-            "still_missing": len(settled_no_clv) - filled, "changes": changes}
+            "still_missing": len(settled_no_clv) - filled,
+            "reference_lags_filled": lags_filled, "changes": changes}
 
 
-def _closing_odds(bet: pd.Series) -> float | None:
-    """Last observed pre-kickoff ask for this contract, as decimal odds.
+def _backfill_reference_lags(df: pd.DataFrame, *, dry_run: bool = False) -> int:
+    """Fill `clv_reference_lag_h` on settled rows that already have a CLV.
+
+    `clv_reference_lag_h` arrived in run 10, after 23 rows had already settled
+    with a CLV and no record of how stale the price behind it was. Without this
+    pass those rows would sit in `clv_unknown_reference_n` forever and the
+    split that motivated the column would have nothing to report on -- for the
+    entire cohort that produced the finding.
+
+    Mutates `df` in place and returns how many rows were filled. It only ever
+    ADDS a lag: `clv_pct` and `closing_odds_decimal` are never recomputed, so a
+    later snapshot arriving cannot quietly restate a settled row's CLV.
+    """
+    if df.empty or "clv_pct" not in df.columns:
+        return 0
+    if "clv_reference_lag_h" not in df.columns:
+        df["clv_reference_lag_h"] = None
+
+    target = df[
+        df["status"].isin(ledger_mod.SETTLED_STATUSES)
+        & df["clv_pct"].notna()
+        & df["clv_reference_lag_h"].isna()
+    ]
+    filled = 0
+    for idx, bet in target.iterrows():
+        _, lag_h = _closing_quote(bet)
+        if lag_h is None:
+            continue
+        filled += 1
+        if not dry_run:
+            df.loc[idx, "clv_reference_lag_h"] = lag_h
+    return filled
+
+
+def _closing_quote(bet: pd.Series) -> tuple[float | None, float | None]:
+    """Last observed pre-kickoff ask for this contract, and how stale it is.
+
+    Returns (decimal_odds, reference_lag_hours). The lag is how long before
+    kickoff that quote was captured, and it is returned alongside the price
+    because the price alone cannot be interpreted without it -- see
+    `ledger.CLV_REFERENCE_MAX_LAG_H`.
 
     The cutoff is the TRUE kickoff from the stats source, never Kalshi's
     expiration. The expiration lands 3-6h after the ball is snapped, so using
@@ -223,24 +278,35 @@ def _closing_odds(bet: pd.Series) -> float | None:
     knows the result, which turns CLV into a restatement of win/loss dressed
     up as evidence of skill.
 
-    If the kickoff cannot be resolved we return None and the bet settles with
-    no CLV. That is the intended behaviour: a missing number is recoverable,
-    a fabricated one is not.
+    If the kickoff cannot be resolved we return (None, None) and the bet
+    settles with no CLV. That is the intended behaviour: a missing number is
+    recoverable, a fabricated one is not.
     """
     ticker, sport = bet.get("market_ticker"), bet.get("sport")
     if not ticker or not sport:
-        return None
+        return None, None
 
     cutoff = _kickoff_for(bet)
     if cutoff is None:
-        return None
+        return None, None
     row = snapshots.latest_before(sport, ticker, str(cutoff))
     if not row:
-        return None
+        return None, None
     ask = row.get("yes_ask")
     if ask is None or pd.isna(ask) or float(ask) <= 0:
-        return None
-    return 1.0 / float(ask)
+        return None, None
+
+    lag = None
+    ko = pd.to_datetime(cutoff, utc=True, errors="coerce")
+    fetched = pd.to_datetime(row.get("fetched_at"), utc=True, errors="coerce")
+    if pd.notna(ko) and pd.notna(fetched):
+        lag = (ko - fetched).total_seconds() / 3600.0
+    return 1.0 / float(ask), lag
+
+
+def _closing_odds(bet: pd.Series) -> float | None:
+    """Back-compat shim: the price only. Prefer `_closing_quote`."""
+    return _closing_quote(bet)[0]
 
 
 _MONTHS = {m: i for i, m in enumerate(
