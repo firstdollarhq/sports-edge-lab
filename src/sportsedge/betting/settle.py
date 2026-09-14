@@ -270,17 +270,62 @@ def _lookup_by_date(by_key: dict, teams: dict, tolerance_days: int = 1) -> str |
     return None
 
 
+def _coverage_windows(played: pd.DataFrame) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """Per-season [first, last] played dates in the stats table.
+
+    Used to tell "the stats source does not carry games from this date at all"
+    apart from "it carries that date and this particular game is missing". A
+    single global min..max cannot do that: NFL preseason sits inside the
+    2018..2026 span but outside every individual season's window.
+    """
+    if played.empty or "game_date" not in played.columns:
+        return []
+    dates = pd.to_datetime(played["game_date"], errors="coerce", format="mixed")
+    seasons = played["season"] if "season" in played.columns else pd.Series(0, index=played.index)
+    windows = []
+    for _, idx in dates.groupby(seasons.astype(str)).groups.items():
+        span = dates.loc[idx].dropna()
+        if not span.empty:
+            windows.append((span.min().normalize(), span.max().normalize()))
+    return windows
+
+
+def _in_coverage(windows, date_code: str, tolerance_days: int = 1) -> bool:
+    """Is this market's date inside a season the stats source actually covers?"""
+    if not windows:
+        return False
+    target = pd.Timestamp(ticker_date(date_code))
+    slack = pd.Timedelta(days=tolerance_days)
+    return any(lo - slack <= target <= hi + slack for lo, hi in windows)
+
+
 def verify_against_stats(games: pd.DataFrame, sport: str) -> dict:
     """Cross-check Kalshi settlements against the independent stats source.
 
     Returns counts plus any disagreements. A non-empty `mismatches` list means
     either our home/away mapping is wrong or a market resolved unusually --
     both worth stopping for.
+
+    `unmatched_games` is split, because the undifferentiated total was
+    misleading enough to sit as an unexplained open item for two runs. Every
+    one of the 94 unmatched NFL markets was a **preseason** game: nflverse
+    carries regular season and playoffs only, so those markets have no
+    counterpart to check and never will. That is the source behaving
+    correctly, and counting it alongside real failures buries the signal --
+    an actual mapping bug on a covered date would have to move a number that
+    was already 94 to be noticed.
+
+      unmatched_out_of_coverage -- the stats source carries no games from that
+                                   date at all (NFL preseason). Expected.
+      unmatched_in_coverage     -- the date IS covered and the game still did
+                                   not match. This is the number to watch; it
+                                   should be 0.
     """
     from sportsedge.ingest.teams import parse_event_ticker, market_team_code
 
     results = fetch_settled_results(sport)
     played = games.dropna(subset=["home_score", "away_score"])
+    windows = _coverage_windows(played)
 
     # Key on date as well as teams: the same pairing recurs across preseason,
     # both halves of a home-and-away season, and playoffs. Matching on teams
@@ -291,6 +336,7 @@ def verify_against_stats(games: pd.DataFrame, sport: str) -> dict:
     }
 
     checked, agreed, mismatches, unmatched = 0, 0, [], 0
+    out_of_coverage, in_coverage_unmatched = 0, []
     for ticker, settlement in results.items():
         event_ticker = ticker.rsplit("-", 1)[0]
         try:
@@ -302,6 +348,13 @@ def verify_against_stats(games: pd.DataFrame, sport: str) -> dict:
         actual = _lookup_by_date(by_key, teams)
         if actual is None:
             unmatched += 1
+            if _in_coverage(windows, teams["date_code"]):
+                in_coverage_unmatched.append({
+                    "ticker": ticker, "date": ticker_date(teams["date_code"]),
+                    "home": teams["home_team"], "away": teams["away_team"],
+                })
+            else:
+                out_of_coverage += 1
             continue
 
         if sport == "soccer" and code == "TIE":
@@ -323,4 +376,7 @@ def verify_against_stats(games: pd.DataFrame, sport: str) -> dict:
             })
 
     return {"checked": checked, "agreed": agreed, "unmatched_games": unmatched,
+            "unmatched_out_of_coverage": out_of_coverage,
+            "unmatched_in_coverage": len(in_coverage_unmatched),
+            "unmatched_in_coverage_sample": in_coverage_unmatched[:10],
             "mismatches": mismatches}

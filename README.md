@@ -5,83 +5,61 @@ A research project testing predictive sports models against real market odds.
 to find a real, validated edge, not to confirm a bias. See `journal/` for an
 honest, dated log of what was tried and what happened.
 
-## Status (2026-09-13, scheduled run #8)
+## Status (2026-09-14, scheduled run #9)
 
-- **0 live bets. 9 settled shadow bets (2 wins), 35 pending, 67 void.**
-  Headline win rate **22.2%**, ROI **-10.66%**. Still one longshot divided by
-  nine; it means nothing either way.
-- **The first result cohort now has an independent cross-check, and it holds.**
-  Run 7 settled 7 EPL wagers from Kalshi's own resolution alone, because
-  football-data.co.uk had not published the fixtures. A second free source
-  (ESPN's public scoreboard) confirms **all 7 results independently**, and
-  `verify-settlements` goes from *90 checked / 21 unmatched* to **114 checked,
-  114 agreed, 0 unmatched**. No settlement was wrong.
-- **CLV exists for the first time: 9 of 9 settled rows now carry one.** Mean
-  **+4.04%**, 5 positive and 4 exactly 0.00, none negative. **Do not read this
-  as skill.** Four of the nine compare an entry price to a "close" captured
-  *twelve minutes later*, the best reference in the set is T-1.2h and the
-  typical one is T-7.8h, and a positive number measured against a later ask is
-  exactly what picking off a thin quote that then reverts also looks like.
-- **The EPL expiration lag is measured, not assumed: exactly 3.00h on 13/13
-  contracts.** It had been an assumed constant since run 5 because no kickoff
-  could be resolved for the settled cohort. NFL is 3.00h x 27 and 6.00h x 3 in
-  the same window, matching what run 6 recorded.
-- **The final hour still has not been measured, and the first attempt to
-  measure it produced a fake zero.** `cli line-movement` initially reported
-  0.00 movement in every near-kickoff bucket -- because for a game that has
-  not kicked off, the "last pre-kickoff quote" *is* the newest bucket's own
-  quote, so the bucket was compared against itself. Over games that have
-  actually kicked off, every closing reference the project holds still sits a
-  median **7.75h** from kickoff -- with one exception that arrived as the run
-  ended: Man City @ Man United, where the cron's 15:23Z capture is a reference
-  **7 minutes** before kickoff. Over the final two hours that board moved one
-  tick on one of three contracts (mean |move| **0.0033**). It is n=1 game and
-  the most liquid fixture on the board, so it is the best case for "nothing
-  moves late", not a representative one. The real test is tonight's 13 NFL
-  games.
-- **The EPL cohort is now 8 wagers, 1 win** (Coventry lost 0-5 to Brighton
-  overnight, taking the count from run 7's seven). The model expected **2.83**
-  wins, the de-vigged closing line expected **2.24**, reality gave **1**. On
-  the bets the model itself chose it still loses to the market on log-loss
-  (0.6321 vs 0.5337) and overstates its sides by **+22.9pp** against realized
-  versus the market's +15.5pp. The *direction* is run 4's selection audit; the
-  *sample* settles nothing -- P(X <= 1) under the model's own probabilities is
-  **0.14**, against the market's 0.28, and neither hypothesis is excluded.
-  Across both sports: 9 wagers, 2 wins, model expected 3.23, market 2.60.
-  `cli scorecard`.
-- **The ledger was counting every bet twice.** 75 non-void rows were **40
-  distinct wagers**. `existing_keys` puts `pricing_version` in the dedupe key
-  so a bump can re-price open rows -- correctly, and there are zero duplicates
-  at an identical version -- but re-pricing is a *replacement* and the code
-  only ever did the insert. The p1 -> p2 bump duplicated 35 wagers instead of
-  replacing them, and both copies always shared an outcome. Every published
-  count ("74 pending", "70 pre-registered bets") was inflated and every CI was
-  narrow by ~sqrt(2). Fixed by `ledger.void_superseded_rows`, run
-  unconditionally inside `recommend`. Eighth bug of this shape.
-- **That repair moved headline ROI from -13.06% to +0.51%, and nothing
-  improved.** No bet changed outcome, no price moved. The whole swing is
-  re-weighting: the one NFL win (SF @ LA at 2.778) contributed +11.85pp in a
-  book of 15 and contributes **+22.22pp** in a book of 8. Split by sport, EPL
-  is **-24.81%** on 7 bets and NFL is +177.78% on n=1.
-- **`closing_odds_decimal` had never held a closing price -- now fixed.** CLV
-  cuts at the last pre-kickoff snapshot; the review session fires once daily
-  at ~06:00Z and both leagues kick off 11:00-01:00Z, so every "closing" price
-  was a mid-morning one -- **T-7.8h** for the settled EPL cohort, **T-10.8h**
-  for NFL week 1. Measured drift in the quiet days beforehand is small (NFL
-  mean |move| 0.0013 over the last full day), but the project held **zero**
-  captures inside the final 8 hours of any settled game, so that bounded
-  nothing about the window where lines actually move.
-  `.github/workflows/snapshot-odds.yml` now captures **every 30 minutes**,
-  10:00-04:00 UTC, with no Claude session involved: `snapshot-odds` needs no
-  key, no model and no game tables, so there was never a reason for it to cost
-  one. Worst-case staleness goes from ~11h to ~1h. The Action captures and
-  commits only -- it never runs `recommend` or `settle`, so an unattended job
-  can never write a bet.
-- **Run 4's pre-registered prediction, restated over the 36 distinct wagers
-  its "70 bets" actually were:** 15.19 claimed / **11.28** selection-corrected
-  / 12.48 market-implied. The restatement sharpens the NFL leg -- corrected
-  (7.79) now sits clearly below market-implied (9.21), so the hypotheses
-  separate. 8 resolved (2 wins), 28 open, 11 of them kicking off tonight.
+- **0 live bets. 23 settled shadow bets (6 wins), 23 pending, 67 void.**
+  Headline win rate **26.1%**, ROI **-13.98%**. Still 23 wagers; it settles
+  nothing on its own.
+- **Run 4's pre-registered prediction has resolved on 23 of 36 wagers, and the
+  model's own claim is the hypothesis it falsifies.** NFL week 1 settled
+  overnight. Actual **6** wins against **9.45** claimed, **7.22**
+  selection-corrected and **7.77** market-implied. The NFL leg is the sharp
+  one -- corrected **4.09**, market 4.82, claimed 5.87, **actual 4**. Exact
+  Poisson-binomial P(X <= 6) is **0.095** under the model's claim, 0.377
+  corrected, 0.287 market. **None of those is a rejection at any conventional
+  level**; what the result says is that the observation sits in the tail of
+  the model's own claim and comfortably inside the other two. `cli scorecard`.
+- **The market beats the model on every scoring rule, on the bets the model
+  itself chose.** Model log-loss **0.6535** vs market **0.6030**; Brier 0.2318
+  vs 0.2057; model overstatement **+15.0pp** vs the market's +7.7pp.
+- **CLV reversed once the reference became real.** Mean CLV falls from run 8's
+  **+4.04%** to **+0.72%**, and the split by leg is the point: the 13 NFL
+  wagers, measured against a genuine **T-0.42h** close, read **-1.03%**, while
+  the 10 EPL wagers on a stale **T-7.75h** reference read +3.00%. Run 8
+  published +4.04% together with the reasons not to believe it; this is what
+  those reasons looked like when the real number arrived. **12 of 23 readings
+  are exactly 0.00%**, and CLV does not separate winners (+0.01%) from losers
+  (+0.98%) in this sample.
+- **The final hour is measured at last, on 26 contracts, and it barely moves.**
+  Against a reference 25 minutes before kickoff: T-1h..T-2h mean |move|
+  **0.0038**, median **0.000**, max 0.01, and **not one of 26 contracts moved
+  as much as two cents**. **`*/15` capture is therefore rejected**; `*/30`
+  stays. Moving the reference from T-8h to T-0.42h shifts the measured price
+  by only ~0.6c -- which is *about the size of the entire effect being
+  measured*, and is why the pre-cron CLV numbers were misleading rather than
+  merely imprecise.
+- **The 94 unmatched NFL settled markets are explained and the item is
+  closed.** All 94 are **August dates -- preseason**, which nflverse does not
+  carry at all (the 2026 table starts 2026-09-09). Never a defect, but it was
+  reported in a way that could hide one: a real mapping failure on a covered
+  date would have had to move a counter already reading 94. `verify_against_stats`
+  now splits `unmatched` into out-of-coverage vs **in-coverage**, using
+  per-season windows from the stats table. NFL: 30 checked, **30 agreed**, 94
+  out of coverage, **0 in coverage**. Soccer: 117 / 117 / 0 / 0.
+  **This is a reporting fix, not a bug fix -- the tally stays at 12.**
+- **Within the settled cohort, the bigger the claimed edge, the bigger the
+  overstatement.** Split at the median claimed edge (19.4%): the low half
+  realized 0.55 wins below its claim, the high half **2.89 below**. That is
+  run 4's selection-audit signature appearing in realized results rather than
+  backtest -- at n = 11 and 12, a direction and not a measurement.
+- **The betting rule, not the rating engine, is the main defect.**
+  Unconditionally NFL Elo is roughly calibrated. Conditional on a side being
+  *bet* it overstates its win probability by **13.7 points**, in every
+  probability bucket; on sides it *passes* it understates by 9.3. That is the
+  winner's curse. `cli selection-audit`.
+- **Elo carries no information the closing line lacks.** Blending
+  `w*model + (1-w)*market` is optimised at **w = 0** for NFL, with log-loss
+  monotonically worse in w; EPL lands on w = 0 for 5 of 6 holdout seasons.
 - **The model loses at both venues, and the exchange is the dearer one.**
   Moving the NFL sample to Kalshi takes ROI from **-8.21% to -11.48%**. The
   tighter book is worth +2.1pp; the trading fee gives back -5.4pp.
@@ -93,26 +71,23 @@ honest, dated log of what was tried and what happened.
   bets below even money**. NFL ROI is negative at every fee rate **including
   zero** (-6.10%), so the conclusion does not rest on the one coefficient
   Kalshi's API will not expose.
-- **The betting rule, not the rating engine, is the main defect.**
-  Unconditionally NFL Elo is roughly calibrated. Conditional on a side being
-  *bet* it overstates its win probability by **13.7 points**, in every
-  probability bucket; on sides it *passes* it understates by 9.3. That is the
-  winner's curse. `cli selection-audit`.
-- **Elo carries no information the closing line lacks.** Blending
-  `w*model + (1-w)*market` is optimised at **w = 0** for NFL, with log-loss
-  monotonically worse in w; EPL lands on w = 0 for 5 of 6 holdout seasons.
+- **The EPL expiration lag is measured, not assumed: exactly 3.00h on 13/13
+  contracts.** NFL is 3.00h x 27 and 6.00h x 3 in the same window.
+- **Settlements are independently cross-checked and all agree.** 30/30 NFL and
+  117/117 soccer, against ESPN's public scoreboard as a third opinion rather
+  than Kalshi's own resolution alone. `espn-audit` is read every run, not
+  assumed: NFL 15/15 scores and kickoffs, EPL 30/30.
 - **150 model configurations backtested. None beat the market.** Nothing
   adopted, `live_enabled` is `false` everywhere.
 - **EPL's +8.27% ROI is retired.** Re-run with each season as holdout it is
   1 of 6 positive; pooled **-8.30%**, sd 9.33pp.
 - **Twelve bugs of one shape so far**, all a value that was not what the
-  surrounding code assumed. Three were introduced *and* caught inside run 8,
-  in the new cross-source code: the line-movement bucket compared against
-  itself (above); `--espn-end` defaulting to the start date, so a range request
-  silently became a one-day request that wrote an empty table and printed a
-  success line; and ESPN's NFL feed including **preseason**, which restarts
-  week numbering at 1 and would have put two meanings of `week` in one
-  committed table. See "Known-bad numbers" below.
+  surrounding code assumed -- most recently the ledger counting every bet
+  twice (run 7) and three caught inside run 8's own new code. See
+  "Known-bad numbers" below.
+- **Next pre-registration, written before the games:** the 13 still-open
+  pre-registered wagers (12 NFL, 1 EPL) settling through 2026-09-21 --
+  claimed **5.74**, selection-corrected **4.05**, market-implied **4.72**.
 
 ## Why these data sources
 
@@ -249,7 +224,7 @@ line it is betting into.
 
 ```bash
 pip install -e ".[dev]"
-pytest                                  # 176 tests, no network needed
+pytest                                  # 209 tests, no network needed
 cp .env.example .env                    # only needed for optional sources
 python -m sportsedge.cli kalshi-nfl     # live NFL market snapshot, no key needed
 python -m sportsedge.cli kalshi-epl     # live EPL market snapshot, no key needed
@@ -476,38 +451,44 @@ corrupts the record.
 - ~~Build the Kalshi-venue backtest~~ -- **done in run 5**
   (`backtest/kalshi_engine.py`). The exchange is the *dearer* venue: NFL ROI
   -8.21% at the sportsbook, -11.48% simulated at Kalshi.
-- **Run 4's pre-registered prediction is resolving, restated over the 36
-  distinct wagers its "70 bets" actually were:** 15.19 claimed / 11.28
-  selection-corrected / 12.48 market-implied. 8 resolved (2 wins, both legs
-  consistent with every hypothesis at this n), 28 open, 11 of them settling
-  tonight. Report the count honestly whichever way it falls, and move nothing
-  in the pricing pipeline until the NFL leg has resolved.
-- ~~The 7 settled EPL results are single-sourced~~ -- **cross-checked in run
-  8** against ESPN's public scoreboard rather than waiting on
-  football-data.co.uk, which still has not published the 2026-09-12 fixtures
-  three runs later. All 7 confirmed; `verify-settlements` now reports 114
-  checked / 114 agreed / **0 unmatched** for soccer. NFL still shows 94
-  unmatched settled Kalshi markets, which is pre-existing and unexamined --
-  ESPN's NFL table starts at 2026-08-01, so it cannot reach them either.
+- **Run 4's pre-registered prediction has resolved on 23 of 36 wagers, and it
+  resolves against the model.** Actual **6** wins vs 9.45 claimed / 7.22
+  selection-corrected / 7.77 market-implied; NFL leg actual **4** vs corrected
+  **4.09**. P(X <= 6) = 0.095 under the model's own claim -- in the tail, but
+  **not a rejection at any conventional level**, and 23 wagers settles nothing
+  by itself. **Next pre-registration, written before the games:** the 13
+  still-open wagers (12 NFL, 1 EPL) settling through 2026-09-21 -- claimed
+  **5.74**, corrected **4.05**, market **4.72**.
+- ~~The settled results are single-sourced~~ -- **cross-checked in run 8** and
+  clean since: 30/30 NFL and 117/117 soccer agree against ESPN's public
+  scoreboard. ~~NFL shows 94 unmatched settled Kalshi markets~~ -- **explained
+  and closed in run 9: all 94 are August dates, i.e. preseason**, which
+  nflverse does not carry (the 2026 table starts 2026-09-09). Not a defect,
+  but it was reported in a way that could have hidden one, so `unmatched` is
+  now split into out-of-coverage vs **in-coverage**; the in-coverage count is
+  the one to watch and it is **0** on both sports.
 - ~~Snapshot cadence is the binding constraint on CLV~~ -- **fixed 2026-09-13**
   by `.github/workflows/snapshot-odds.yml`, every 30 min, 10:00-04:00 UTC.
   It had looked like an account-level schedule no session could change; it was
   never a schedule problem. **Every CLV computed before that workflow's first
   run is still a T-8h to T-11h number and should be read with that attached.**
-- **The final hour is STILL unmeasured.** `cli line-movement` now exists and
-  the cron is capturing inside the window, but every game that has *already
-  kicked off* predates the cron, so the closest closing reference the project
-  holds sits a median **7.75h** out. The measurement lands mechanically once
-  today's NFL slate settles -- 13 games with captures at T-2h, T-1.5h, T-1h
-  and T-0.5h. Do it first thing next run, and only then decide on `*/15`.
-- **Verify the backfilled CLV by hand.** `backfill_clv` has now run for real
-  and filled 7 rows, and the aggregate (+4.04%) is the flattering direction,
-  which is this project's standing reason to distrust a number. Two of the
-  seven were checked by hand this run (Arsenal @ Sunderland +16.67%: 0.12 ->
-  0.14 ask between 06:0xZ and the 15:19Z capture, kickoff 19:00Z; Everton @
-  Tottenham 0.00%: same 0.27 ask at entry and at the 15:19Z capture). The
-  other five compare prices captured roughly twelve minutes apart and are
-  arithmetically fine but substantively empty. Finish the check.
+- ~~The final hour is unmeasured~~ -- **measured in run 9 on 26 NFL contracts**
+  against a reference 25 minutes before kickoff. It barely moves: T-1h..T-2h
+  mean |move| **0.0038**, median 0.000, and **not one of 26 contracts moved as
+  much as two cents**. **`*/15` is rejected on that evidence; capture stays at
+  `*/30`.** The useful number is the gap between buckets: moving the reference
+  from T-8h to T-0.42h shifts the measured price only ~0.6c, which is about
+  the size of the whole effect being measured -- so the pre-cron CLV readings
+  were misleading rather than merely imprecise. Still one high-liquidity NFL
+  slate, so "quiet" is the best case, not the typical one.
+- **CLV reversed once the reference became real, and may not be a usable
+  signal at this venue at all.** Mean CLV fell from run 8's +4.04% to
+  **+0.72%** as 23 rows replaced 9. The leg with a genuine T-0.42h close (13
+  NFL wagers) reads **-1.03%**; the leg on a stale T-7.75h reference (10 EPL)
+  reads +3.00%. **12 of 23 readings are exactly 0.00%** and CLV does not
+  separate winners (+0.01%) from losers (+0.98%). Given a market whose entire
+  observed movement inside two hours is one cent, the open question is no
+  longer "is the CLV number believable" but "can CLV measure anything here".
 - ~~Measure the EPL expiry lag rather than assuming 3h~~ -- **measured in run
   8: exactly 3.00h on 13/13 contracts**, via ESPN kickoffs rather than waiting
   for football-data.co.uk. The assumed constant was right. NFL in the same
