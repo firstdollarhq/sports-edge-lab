@@ -66,7 +66,7 @@ def backtest_nfl(games: pd.DataFrame, model: NflEloModel, edge_threshold: float 
     games = games.reset_index(drop=True)
     games = games.dropna(subset=["home_score", "away_score"])
 
-    y_true, p_pred, bets = [], [], []
+    y_true, p_pred, bets, predictions = [], [], [], []
     prev_season = None
 
     for _, g in games.iterrows():
@@ -78,11 +78,17 @@ def backtest_nfl(games: pd.DataFrame, model: NflEloModel, edge_threshold: float 
         actual_home = 1 if g["result"] == "H" else 0
         y_true.append(actual_home)
         p_pred.append(p_home)
+        # Every priced game, bet or not. `bets` is a selected sample by
+        # construction, so it cannot answer whether the model ranks games as
+        # well as the market does; this can. See backtest.discrimination.
+        predictions.append({"game_id": g["game_id"], "y": actual_home,
+                            "p_model": p_home, "p_market": None})
 
         if pd.notna(g.get("home_odds_decimal")) and pd.notna(g.get("away_odds_decimal")):
             imp_home = 1 / g["home_odds_decimal"]
             imp_away = 1 / g["away_odds_decimal"]
             fair_home, fair_away = devig_two_way(imp_home, imp_away)
+            predictions[-1]["p_market"] = fair_home
 
             odds_home = pricer.decimal_odds(fair_home, g["home_odds_decimal"])
             if odds_home is not None:
@@ -108,6 +114,7 @@ def backtest_nfl(games: pd.DataFrame, model: NflEloModel, edge_threshold: float 
         "brier_score": brier_score(y_true, p_pred),
         "roi": simulate_flat_stake_roi(bets),
         "bets": bets,
+        "predictions": predictions,
     }
 
 
@@ -135,7 +142,7 @@ def backtest_soccer(games: pd.DataFrame, model: SoccerEloModel, edge_threshold: 
     calibrator = SoccerOutcomeCalibrator()
     calibrator.fit(calib_diffs, calib_outcomes)
 
-    y_true_h, p_pred_h, bets = [], [], []
+    y_true_h, p_pred_h, bets, predictions = [], [], [], []
     for _, g in games[games["season"] == test_season].iterrows():
         diff = model.elo_diff(g["home_team"], g["away_team"])
         probs = calibrator.predict_proba(diff)
@@ -143,6 +150,11 @@ def backtest_soccer(games: pd.DataFrame, model: SoccerEloModel, edge_threshold: 
 
         y_true_h.append(1 if g["result"] == "H" else 0)
         p_pred_h.append(p_h)
+        # Home-win only: it is the one outcome both the model and a de-vigged
+        # 1X2 market price directly, so it is the only apples-to-apples ranking
+        # comparison available on this leg.
+        predictions.append({"game_id": g["game_id"], "y": 1 if g["result"] == "H" else 0,
+                            "p_model": p_h, "p_market": None})
 
         odds = {
             "H": (p_h, g.get("home_odds_decimal"), g["result"] == "H"),
@@ -153,6 +165,7 @@ def backtest_soccer(games: pd.DataFrame, model: SoccerEloModel, edge_threshold: 
             imp = {k: 1 / v[1] for k, v in odds.items()}
             fair_h, fair_d, fair_a = devig_three_way(imp["H"], imp["D"], imp["A"])
             fair = {"H": fair_h, "D": fair_d, "A": fair_a}
+            predictions[-1]["p_market"] = fair_h
             for outcome, (p_model, dec_odds, won) in odds.items():
                 traded_odds = pricer.decimal_odds(fair[outcome], dec_odds)
                 if traded_odds is None:
@@ -173,4 +186,5 @@ def backtest_soccer(games: pd.DataFrame, model: SoccerEloModel, edge_threshold: 
         "brier_score": brier_score(y_true_h, p_pred_h),
         "roi": simulate_flat_stake_roi(bets),
         "bets": bets,
+        "predictions": predictions,
     }

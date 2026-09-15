@@ -4,8 +4,13 @@
     python -m sportsedge.cli spread-report            # what crossing the spread costs today
     python -m sportsedge.cli ingest-nfl --seasons 2023 2024
     python -m sportsedge.cli ingest-soccer --league E0 --seasons 2324 2425
-    python -m sportsedge.cli backtest-nfl --seasons 2020 2021 2022 2023 2024
-    python -m sportsedge.cli backtest-soccer --league E0 --seasons 2223 2324 2425
+    python -m sportsedge.cli backtest-nfl       # canonical window 2018-2024
+    python -m sportsedge.cli backtest-soccer    # canonical window 1920-2425
+                                                # (both default to
+                                                #  backtest.benchmarks; pass
+                                                #  --seasons only to ask a
+                                                #  different question, and say
+                                                #  which window you used)
     python -m sportsedge.cli sweep-nfl                # parameter grid vs the closing line
     python -m sportsedge.cli selection-audit          # is the model wrong, or the bet rule?
     python -m sportsedge.cli venue-report             # what trading on Kalshi instead costs
@@ -22,6 +27,7 @@
                                                       #  (primary + ESPN gap-fill)
     python -m sportsedge.cli line-movement            # price drift by time-to-kickoff
     python -m sportsedge.cli scorecard                 # model vs market vs reality
+    python -m sportsedge.cli discrimination-report     # calibration, or ranking?
     python -m sportsedge.cli ledger-summary
 """
 from __future__ import annotations
@@ -43,7 +49,7 @@ from sportsedge.ingest import kickoff as kickoff_mod
 from sportsedge.models.elo import NflEloModel, SoccerEloModel
 from sportsedge.models.live import build_nfl_model, build_soccer_model
 from sportsedge.backtest.engine import backtest_nfl, backtest_soccer
-from sportsedge.backtest import sweep, selection, kalshi_engine
+from sportsedge.backtest import sweep, selection, kalshi_engine, benchmarks, discrimination
 from sportsedge.betting import liquidity, recommend as recommend_mod, settle as settle_mod
 from sportsedge.betting import ledger as ledger_mod
 from sportsedge.betting import scorecard
@@ -508,11 +514,27 @@ def cmd_ledger_summary(_args):
     print(json.dumps(summarize(), indent=2, default=str))
 
 
+def cmd_discrimination_report(args):
+    """Calibration or discrimination? Bounds every recalibration-shaped change."""
+    out = {}
+    if "nfl" in args.sports:
+        games = _load_games("nfl_games", benchmarks.NFL_SEASONS, _nfl_season_labels,
+                            fetch_nfl_games, list(benchmarks.NFL_SEASONS))
+        res = backtest_nfl(games, NflEloModel())
+        out["nfl"] = discrimination.discrimination_report(res["predictions"])
+    if "soccer" in args.sports:
+        games = _load_games("epl_games", benchmarks.EPL_SEASONS, _epl_season_labels,
+                            fetch_soccer_games, "E0", list(benchmarks.EPL_SEASONS))
+        res = backtest_soccer(games, SoccerEloModel())
+        out["soccer"] = discrimination.discrimination_report(res["predictions"])
+    print(json.dumps(out, indent=2, default=str))
+
+
 def cmd_scorecard(args):
     print(json.dumps(scorecard.summarize(tuple(args.sports)), indent=2, default=str))
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(prog="sportsedge")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -548,7 +570,11 @@ def main():
     p.set_defaults(func=cmd_ingest_soccer)
 
     p = sub.add_parser("backtest-nfl")
-    p.add_argument("--seasons", nargs="+", type=int, required=True)
+    p.add_argument("--seasons", nargs="+", type=int,
+                   default=list(benchmarks.NFL_SEASONS),
+                   help="default is the canonical regression window "
+                        f"{benchmarks.NFL_SEASONS[0]}-{benchmarks.NFL_SEASONS[-1]}; "
+                        "a different window gives a different number, not a regression")
     p.add_argument("--edge-threshold", type=float, default=3.0, help="percent")
     p.add_argument("--mov", action="store_true", help="use margin-of-victory K scaling")
     p.set_defaults(func=cmd_backtest_nfl)
@@ -562,8 +588,11 @@ def main():
     p.set_defaults(func=cmd_sweep_nfl)
 
     p = sub.add_parser("backtest-soccer")
-    p.add_argument("--league", default="E0")
-    p.add_argument("--seasons", nargs="+", required=True)
+    p.add_argument("--league", default=benchmarks.EPL_LEAGUE)
+    p.add_argument("--seasons", nargs="+", default=list(benchmarks.EPL_SEASONS),
+                   help="default is the canonical regression window "
+                        f"{benchmarks.EPL_SEASONS[0]}-{benchmarks.EPL_SEASONS[-1]}; "
+                        "holdout ROI swings ~9 points on this choice alone")
     p.add_argument("--edge-threshold", type=float, default=3.0, help="percent")
     p.set_defaults(func=cmd_backtest_soccer)
 
@@ -614,10 +643,19 @@ def main():
     p.add_argument("--sports", nargs="+", default=["nfl", "soccer"])
     p.set_defaults(func=cmd_scorecard)
 
+    p = sub.add_parser("discrimination-report",
+                       help="can recalibration fix the model, or is it the ranking?")
+    p.add_argument("--sports", nargs="+", default=["nfl", "soccer"])
+    p.set_defaults(func=cmd_discrimination_report)
+
     p = sub.add_parser("ledger-summary")
     p.set_defaults(func=cmd_ledger_summary)
 
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = build_parser().parse_args()
     args.func(args)
 
 

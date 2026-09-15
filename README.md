@@ -7,9 +7,22 @@ honest, dated log of what was tried and what happened.
 
 ## Status (2026-09-14, scheduled run #9)
 
-- **0 live bets. 23 settled shadow bets (6 wins), 23 pending, 67 void.**
-  Headline win rate **26.1%**, ROI **-13.98%**. Still 23 wagers; it settles
+- **0 live bets. 25 settled shadow bets (6 wins), 24 pending, 67 void.**
+  Headline win rate **24.0%**, ROI **-20.87%**. Still 25 wagers; it settles
   nothing on its own.
+- **The NFL model's problem is discrimination, not calibration — which rules
+  out every recalibration-shaped change at once.** Over all 1,942 priced games
+  in the canonical window, model AUC is **0.678** against the market's
+  **0.724**; paired bootstrap gap **-0.046**, 95% CI **[-0.064, -0.030]**, and
+  the model ranks better in **0 of 5,000** resamples. AUC is invariant under
+  any monotone transform, so no threshold move, no shrinkage, no Platt or
+  isotonic fit, no fee-inclusive edge can close it — none of them reorder
+  anything. The Murphy decomposition agrees: the model's deficit is mostly
+  **resolution** (0.0241 vs 0.0372), not reliability (0.0055 vs 0.0005). And
+  an *oracle* recalibration — isotonic fit on the very outcomes it is scored
+  on — still only reaches log-loss **0.635** against the market's **0.610**.
+  This is the answer to run 10's closing question, and it retires a whole
+  family of proposals. `cli discrimination-report`.
 - **Run 4's pre-registered prediction has resolved on 23 of 36 wagers, and the
   model's own claim is the hypothesis it falsifies.** NFL week 1 settled
   overnight. Actual **6** wins against **9.45** claimed, **7.22**
@@ -221,10 +234,20 @@ Run it yourself:
 
 ```bash
 pip install -e ".[dev]"
-python -m sportsedge.cli backtest-nfl --seasons 2018 2019 2020 2021 2022 2023 2024
-python -m sportsedge.cli backtest-soccer --league E0 --seasons 1920 2021 2122 2223 2324 2425
+python -m sportsedge.cli backtest-nfl       # canonical window, 2018-2024
+python -m sportsedge.cli backtest-soccer    # canonical window, 1920-2425
 python -m sportsedge.cli selection-audit    # is the model wrong, or the bet rule?
+python -m sportsedge.cli discrimination-report   # is it calibration, or ranking?
 ```
+
+Both backtests now **default** to the canonical window rather than requiring
+`--seasons`. The windows used to live only in journal prose, and the example in
+`cli.py`'s docstring was a different one: 2020-2024 returns -9.84% and
+2223-2425 returns -8.46%, both plausible-looking numbers that are not the
+pinned ones. `tests/test_benchmarks.py` pins all four exactly, so a real drift
+fails CI instead of being spotted by eye. Pass `--seasons` only to ask a
+different question, and state the window whenever you quote the answer — the
+EPL holdout ROI moves about nine points on that choice alone.
 
 `selection-audit` answers the two questions a parameter sweep cannot: whether
 the model's errors are concentrated in the sides it chooses to bet (the

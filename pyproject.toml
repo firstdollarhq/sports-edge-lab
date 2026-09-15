@@ -4,7 +4,18 @@ version = "0.1.0"
 description = "Predictive sports models backtested against real market odds (paper trading research project)"
 requires-python = ">=3.10"
 dependencies = [
-    "pandas>=2.0",
+    # pandas>=3.0, not >=2.0. The old floor was aspirational: on pandas 2.3.3
+    # three snapshot tests fail, including the 1-ULP dedup guard, so a resolver
+    # that picked a 2.x wheel produced a repo that does not work. Raised to the
+    # version actually verified green (3.0.5, run 11).
+    #
+    # Nothing here is pinned exactly, and that is a standing risk to this
+    # project's central claim: four backtest numbers are reported every run as
+    # "digit-for-digit", on a container that is wiped and re-resolves
+    # dependencies from scratch each time. They have held so far, and
+    # tests/test_benchmarks.py now fails loudly if a future resolution moves
+    # them, rather than leaving it to be noticed by eye.
+    "pandas>=3.0",
     "numpy>=1.24",
     "requests>=2.31",
     "pyyaml>=6.0",
