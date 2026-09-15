@@ -5,11 +5,39 @@ A research project testing predictive sports models against real market odds.
 to find a real, validated edge, not to confirm a bias. See `journal/` for an
 honest, dated log of what was tried and what happened.
 
-## Status (2026-09-14, scheduled run #9)
+## Status (2026-09-15, scheduled run #12)
 
 - **0 live bets. 25 settled shadow bets (6 wins), 24 pending, 67 void.**
   Headline win rate **24.0%**, ROI **-20.87%**. Still 25 wagers; it settles
   nothing on its own.
+- **The free information Elo cannot see makes the ranking worse, not better —
+  so run 11's proposed direction is now itself a rejected change.** nflverse
+  ships rest, short weeks, divisional games, neutral sites, roof, weather and
+  starting-QB ids, and the ingest was discarding all of it. Carried, fit
+  walk-forward as a logistic on `[elo_diff + context]`, and scored on AUC over
+  1,408 games (2020-2024), every tier ranks **below** an elo-only control:
+  schedule **-0.0111** [-0.017, -0.005], weather **-0.0126** [-0.020, -0.006],
+  qb -0.0071 [-0.017, +0.003]. None approaches the market (0.7288). Sweeping
+  the L2 penalty over 15 (tier, C) settings finds **no setting where context
+  beats the control** — the best is qb at C=0.1, -0.0045 with a CI straddling
+  zero. **Nothing adopted.** `cli context-report --sweep-regularization`.
+  - The coefficients are *sensible* — `neutral_site` lands at **-0.4534**,
+    correctly undoing most of the flat +55 Elo hands a team that is not home.
+    It applies to 54 of 2,499 games, so being right about 2.2% of the sample
+    does not pay for the variance added to 100% of it.
+  - Two tiers **improve log-loss while ranking worse**. That is exactly the
+    trap run 11's AUC bound exists to catch, and it would have read as an
+    improvement under every metric this project used before run 11.
+- **A per-season refit is not a monotone transform, and the control caught
+  it.** A logistic on `elo_diff` alone must reproduce baseline Elo's AUC
+  exactly; pooled it did not (0.68389 vs 0.68532). Cause: the model refits each
+  season, so the window is five *different* monotone transforms. Per season the
+  control ties at **exactly 0.0, all five**. So the control is asserted per
+  season, and the yardstick for the features is the elo-only tier rather than
+  raw Elo — otherwise the refit effect (-0.0014) would have been credited to
+  the features and made the result look better than it is. Run 11's bound is
+  untouched: it concerns a single fixed transform, and this effect is two
+  orders of magnitude short of the -0.046 gap to the market.
 - **The NFL model's problem is discrimination, not calibration — which rules
   out every recalibration-shaped change at once.** Over all 1,942 priced games
   in the canonical window, model AUC is **0.678** against the market's
@@ -101,14 +129,18 @@ honest, dated log of what was tried and what happened.
   117/117 soccer, against ESPN's public scoreboard as a third opinion rather
   than Kalshi's own resolution alone. `espn-audit` is read every run, not
   assumed: NFL 15/15 scores and kickoffs, EPL 30/30.
-- **150 model configurations backtested. None beat the market.** Nothing
-  adopted, `live_enabled` is `false` everywhere.
+- **150 model configurations backtested, plus 15 context-feature fits in run
+  12. None beat the market.** Nothing adopted, `live_enabled` is `false`
+  everywhere.
 - **EPL's +8.27% ROI is retired.** Re-run with each season as holdout it is
   1 of 6 positive; pooled **-8.30%**, sd 9.33pp.
 - **Twelve bugs of one shape so far**, all a value that was not what the
   surrounding code assumed -- most recently the ledger counting every bet
   twice (run 7) and three caught inside run 8's own new code. See
-  "Known-bad numbers" below.
+  "Known-bad numbers" below. **The tally stays at 12 after run 12**: the
+  pooled-control discrepancy it found was caught by a control written to catch
+  it, before any number rested on it, which is the system working rather than
+  a thirteenth failure of it.
 - **Next pre-registration, written before the games:** the 13 still-open
   pre-registered wagers (12 NFL, 1 EPL) settling through 2026-09-21 --
   claimed **5.74**, selection-corrected **4.05**, market-implied **4.72**.
@@ -117,7 +149,7 @@ honest, dated log of what was tried and what happened.
 
 | Need | Source | Cost | Notes |
 |---|---|---|---|
-| NFL schedules, scores, closing lines (historical) | [nflverse](https://github.com/nflverse/nfl_data_py) | Free, no key | Ships actual closing moneyline/spread/total per game |
+| NFL schedules, scores, closing lines (historical) | [nflverse](https://github.com/nflverse/nfl_data_py) | Free, no key | Ships actual closing moneyline/spread/total per game. Also ships the pre-kickoff context run 12 tested and rejected (rest, divisional, neutral site, roof, surface, temp, wind, starting QB) — carried since run 12, **never read by Elo** |
 | Soccer results + closing odds (historical) | [football-data.co.uk](https://www.football-data.co.uk/) | Free, no key | CSV per league/season; uses bookmaker-average (`Avg*`) columns when available |
 | **Live market odds (both sports, ongoing)** | **[Kalshi](https://kalshi.com)** public REST API | **Free, no key** | CFTC-regulated exchange; read-only market data needs no auth. Each contract's dollar price *is* the market-implied probability. `KXNFLGAME` / `KXEPLGAME` series. |
 | **Settlement cross-check + kickoff times (both sports)** | **[ESPN public scoreboard](https://site.api.espn.com/apis/site/v2/sports/)** | **Free, no key** | Undocumented endpoint behind espn.com's scoreboard. Schedules and results only — **no odds, never feeds the model**. Publishes within minutes of full time, where football-data.co.uk publishes in batches days later. Verified against the primary source: 30/30 scores and 30/30 kickoffs agree (`cli espn-audit`). |
@@ -142,9 +174,13 @@ src/sportsedge/
                 teams.py (Kalshi ticker -> stats-source team resolution)
   models/       elo.py (rating engines), calibration.py (soccer 3-way outcome calibration)
                 live.py (current-strength ratings for pricing today's games)
+                features.py (pre-kickoff context: rest/venue/weather/QB — TESTED
+                             AND REJECTED, run 12; kept as the evidence)
   backtest/     engine.py (walk-forward backtest, no lookahead), metrics.py
                 sweep.py (parameter grid vs the closing line)
                 selection.py (winner's-curse audit + model-vs-market blend)
+                discrimination.py (calibration or ranking? bounds recalibration)
+                context.py (does non-Elo information rank better? + L2 sweep)
   betting/      edge.py (de-vig, EV, Kelly), ledger.py (bets/ledger.csv)
                 scorecard.py (settled bets vs model AND market, effective n)
                 liquidity.py (is this quote fillable?), recommend.py (model vs market)
@@ -494,6 +530,18 @@ corrupts the record.
 
 ## Open questions / next steps
 
+- **The honest null is now the leading hypothesis, and it is stated as one.**
+  Twelve runs, 150+ configurations, a hard AUC bound retiring every
+  recalibration-shaped change (run 11), and a negative result on the obvious
+  non-Elo information (run 12). Nothing found so far suggests a public-data
+  team-strength model beats this closing line. That is a finding, not a
+  failure — but adding further features without a reason to expect a different
+  outcome would be.
+- **What would actually be a different bet:** information the closing line
+  prices *late* or prices *badly*, not information it prices perfectly. Every
+  feature run 12 tested is on the market's screen too, and the line-movement
+  work says the final hour barely moves (26 contracts, none moved 2c), which
+  is itself evidence the market is not leaving anything on the table here.
 - **The selection gap is the thing to attack, not the ratings.** A model need
   not beat the market on every game to be bettable -- it needs to be right
   about *which* games it disagrees on. Nothing measured so far suggests Elo
