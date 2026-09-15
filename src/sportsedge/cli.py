@@ -28,6 +28,7 @@
     python -m sportsedge.cli line-movement            # price drift by time-to-kickoff
     python -m sportsedge.cli scorecard                 # model vs market vs reality
     python -m sportsedge.cli discrimination-report     # calibration, or ranking?
+    python -m sportsedge.cli context-report            # does non-Elo info rank better?
     python -m sportsedge.cli ledger-summary
 """
 from __future__ import annotations
@@ -49,7 +50,9 @@ from sportsedge.ingest import kickoff as kickoff_mod
 from sportsedge.models.elo import NflEloModel, SoccerEloModel
 from sportsedge.models.live import build_nfl_model, build_soccer_model
 from sportsedge.backtest.engine import backtest_nfl, backtest_soccer
-from sportsedge.backtest import sweep, selection, kalshi_engine, benchmarks, discrimination
+from sportsedge.backtest import (sweep, selection, kalshi_engine, benchmarks,
+                                 discrimination, context)
+from sportsedge.models import features
 from sportsedge.betting import liquidity, recommend as recommend_mod, settle as settle_mod
 from sportsedge.betting import ledger as ledger_mod
 from sportsedge.betting import scorecard
@@ -530,6 +533,32 @@ def cmd_discrimination_report(args):
     print(json.dumps(out, indent=2, default=str))
 
 
+def cmd_context_report(args):
+    """Does information Elo cannot see rank games better than Elo can?
+
+    NFL only: nflverse ships rest/venue/weather/QB per game and
+    football-data.co.uk ships none of it, so there is no soccer leg to run.
+    """
+    games = _load_games("nfl_games", benchmarks.NFL_SEASONS, _nfl_season_labels,
+                        fetch_nfl_games, list(benchmarks.NFL_SEASONS))
+    out = context.context_report(games, tiers=tuple(args.tiers),
+                                 edge_threshold=args.edge_threshold / 100,
+                                 min_train_games=args.min_train_games)
+
+    if args.sweep_regularization:
+        out["regularization_sweep"] = context.regularization_sweep(
+            games, edge_threshold=args.edge_threshold / 100,
+            min_train_games=args.min_train_games)
+
+    print(json.dumps(out, indent=2, default=str))
+
+    if not out["control_ok"]:
+        raise SystemExit(
+            "CONTROL FAILED: a logistic on elo_diff alone must reproduce baseline "
+            f"Elo's AUC exactly, and it differs by {out['control_auc_delta']!r}. "
+            "Every other number in this report is void until that is explained.")
+
+
 def cmd_scorecard(args):
     print(json.dumps(scorecard.summarize(tuple(args.sports)), indent=2, default=str))
 
@@ -647,6 +676,15 @@ def build_parser():
                        help="can recalibration fix the model, or is it the ranking?")
     p.add_argument("--sports", nargs="+", default=["nfl", "soccer"])
     p.set_defaults(func=cmd_discrimination_report)
+
+    p = sub.add_parser("context-report",
+                       help="does rest/venue/weather/QB rank better than Elo alone?")
+    p.add_argument("--tiers", nargs="+", default=list(features.TIERS))
+    p.add_argument("--edge-threshold", type=float, default=3.0, help="percent")
+    p.add_argument("--min-train-games", type=int, default=400)
+    p.add_argument("--sweep-regularization", action="store_true",
+                   help="is the degradation overfitting? sweep the L2 penalty")
+    p.set_defaults(func=cmd_context_report)
 
     p = sub.add_parser("ledger-summary")
     p.set_defaults(func=cmd_ledger_summary)

@@ -54,7 +54,14 @@ class SportsbookPricer:
 
 
 def backtest_nfl(games: pd.DataFrame, model: NflEloModel, edge_threshold: float = 0.03,
-                  season_regression: float = 0.33, pricer: Pricer | None = None) -> dict:
+                  season_regression: float = 0.33, pricer: Pricer | None = None,
+                  context_model=None) -> dict:
+    """`context_model` is optional and purely observational: when supplied it
+    rides THIS loop (see the module docstring on why there is only one), sees
+    the same walk-forward Elo diff, and writes a `p_context` alongside
+    `p_model` in `predictions`. It never influences Elo, the bet rule, or any
+    returned metric, so the baseline path is unchanged -- `test_features.py`
+    pins that the canonical numbers reproduce with a context model attached."""
     # Sort on a numeric week, never the raw column. A string "10" sorts before
     # "2", which silently scrambles the within-season order and lets ratings
     # from late in the season inform predictions made early in it. This was
@@ -72,6 +79,11 @@ def backtest_nfl(games: pd.DataFrame, model: NflEloModel, edge_threshold: float 
     for _, g in games.iterrows():
         if prev_season is not None and g["season"] != prev_season:
             model.book.regress_to_mean(season_regression)
+            # Refit the context model on completed seasons only. Placed on the
+            # season boundary, before this season's first prediction, so the
+            # coefficients pricing a game are never fit on that game.
+            if context_model is not None:
+                context_model.start_season()
         prev_season = g["season"]
 
         p_home = model.win_prob_home(g["home_team"], g["away_team"])
@@ -81,8 +93,22 @@ def backtest_nfl(games: pd.DataFrame, model: NflEloModel, edge_threshold: float 
         # Every priced game, bet or not. `bets` is a selected sample by
         # construction, so it cannot answer whether the model ranks games as
         # well as the market does; this can. See backtest.discrimination.
+        # `season` rides along because a per-season refit is only a monotone
+        # transform WITHIN a season; pooled across seasons it can reorder, and
+        # separating those two effects needs the label. See backtest.context.
         predictions.append({"game_id": g["game_id"], "y": actual_home,
-                            "p_model": p_home, "p_market": None})
+                            "season": str(g["season"]), "p_model": p_home,
+                            "p_market": None})
+
+        # Elo's own view of the matchup, home advantage included, taken BEFORE
+        # this game updates the book. Including the advantage is deliberate: it
+        # is what lets `neutral_site` express "no, nobody is home here" rather
+        # than the context fit having to rediscover home field from scratch.
+        elo_diff = None
+        if context_model is not None:
+            elo_diff = (model.book.get(g["home_team"]) + model.home_advantage
+                        - model.book.get(g["away_team"]))
+            predictions[-1]["p_context"] = context_model.predict(g, elo_diff)
 
         if pd.notna(g.get("home_odds_decimal")) and pd.notna(g.get("away_odds_decimal")):
             imp_home = 1 / g["home_odds_decimal"]
@@ -105,6 +131,11 @@ def backtest_nfl(games: pd.DataFrame, model: NflEloModel, edge_threshold: float 
                     bets.append({"model_prob": 1 - p_home, "decimal_odds": odds_away,
                                   "won": g["result"] == "A", "fair_market_prob": fair_away,
                                   "edge_frac": away_edge, "game_id": g["game_id"]})
+
+        # Observed only after the game has been predicted and scored, so the
+        # training set is always strictly in this game's past.
+        if context_model is not None:
+            context_model.observe(g, elo_diff, actual_home)
 
         model.update(g["home_team"], g["away_team"], g["home_score"], g["away_score"])
 

@@ -29,9 +29,40 @@ def _kickoff_utc(gameday: pd.Series, gametime: pd.Series) -> pd.Series:
                  .dt.tz_convert(timezone.utc))
 
 
+def _neutral_site(location: pd.Series) -> pd.Series:
+    """nflverse `location` is 'Home' for a normal game and 'Neutral' otherwise.
+
+    Elo applies a flat home advantage to the nominal home team on every game,
+    including London/Munich/Super Bowl games where nobody is home. That is a
+    real ranking error the schedule discloses in advance, which is exactly the
+    kind of thing run 11's AUC bound says is worth testing.
+    """
+    return (location.astype(str).str.strip().str.lower() != "home").astype(int)
+
+
 def fetch_nfl_games(seasons: list[int]) -> pd.DataFrame:
     """Returns one row per game with result + closing moneyline/spread/total,
-    for completed games only (rows with no score are future/unplayed)."""
+    for completed games only (rows with no score are future/unplayed).
+
+    Also carries the pre-kickoff CONTEXT columns nflverse ships and this ingest
+    discarded until run 12: rest days, divisional flag, neutral site, roof,
+    surface, weather, and the starting QB ids. None of these feed Elo -- Elo
+    sees team identity and nothing else -- they exist so that
+    `models.features` can test whether information the rating engine cannot
+    see improves the ORDER games are ranked in. See backtest/discrimination.py
+    for why ranking is the only thing left worth testing.
+
+    Provenance note, because two of these are not equally trustworthy:
+      * rest / div_game / location / roof / surface are SCHEDULE facts, known
+        weeks ahead. No lookahead risk at all.
+      * temp / wind are the conditions nflverse RECORDS for the game, i.e.
+        roughly what happened, where a model pricing at T-8h would only have a
+        forecast. Usable, but optimistic; `features.py` tiers them separately
+        and the journal reports the tiers apart.
+      * qb ids are the QBs who actually STARTED. Inactives post ~90 minutes
+        before kickoff, so this is close to knowable, but it is not knowable
+        at the time this project actually prices a game. Same treatment.
+    """
     df = nfl.import_schedules(seasons)
     now = datetime.now(timezone.utc).isoformat()
 
@@ -58,6 +89,17 @@ def fetch_nfl_games(seasons: list[int]) -> pd.DataFrame:
         "draw_odds_decimal": None,
         "spread_line": df["spread_line"],
         "total_line": df["total_line"],
+        # --- pre-kickoff context (never read by Elo; see docstring) ---
+        "home_rest": df["home_rest"].astype("Int64"),
+        "away_rest": df["away_rest"].astype("Int64"),
+        "div_game": df["div_game"].astype("Int64"),
+        "neutral_site": _neutral_site(df["location"]),
+        "roof": df["roof"],
+        "surface": df["surface"],
+        "temp": df["temp"],
+        "wind": df["wind"],
+        "home_qb_id": df["home_qb_id"],
+        "away_qb_id": df["away_qb_id"],
         "source": "nflverse",
         "ingested_at": now,
     })

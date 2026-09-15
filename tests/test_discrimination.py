@@ -122,5 +122,10 @@ def test_engines_expose_per_game_predictions():
     res = backtest_nfl(games, NflEloModel())
     assert len(res["predictions"]) == 5
     row = res["predictions"][0]
-    assert set(row) == {"game_id", "y", "p_model", "p_market"}
+    # `season` joined this record in run 12: a context model refits on season
+    # boundaries, so separating "the features reordered games" from "the refit
+    # reordered games" needs the label. Kept as an exact set so a future field
+    # has to be added deliberately rather than appearing by accident.
+    assert set(row) == {"game_id", "y", "season", "p_model", "p_market"}
+    assert row["season"] == "2023"
     assert row["p_market"] is not None, "a priced game must carry a market probability"

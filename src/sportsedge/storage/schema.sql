@@ -21,6 +21,21 @@ CREATE TABLE IF NOT EXISTS games (
     draw_odds_decimal REAL,           -- soccer only
     spread_line REAL,
     total_line REAL,
+    -- Pre-kickoff context, NFL only (nflverse ships it; football-data.co.uk
+    -- does not). Elo never reads these: they exist so models.features can test
+    -- whether information outside team strength reorders games better than the
+    -- rating engine alone. Nullable throughout -- soccer rows carry none, and
+    -- temp/wind are absent for every indoor game.
+    home_rest INTEGER,
+    away_rest INTEGER,
+    div_game INTEGER,
+    neutral_site INTEGER,
+    roof TEXT,
+    surface TEXT,
+    temp REAL,
+    wind REAL,
+    home_qb_id TEXT,
+    away_qb_id TEXT,
     source TEXT NOT NULL,
     ingested_at TEXT NOT NULL
 );
