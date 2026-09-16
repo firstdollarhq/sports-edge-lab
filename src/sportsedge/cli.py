@@ -26,6 +26,9 @@
     python -m sportsedge.cli verify-settlements       # cross-check Kalshi vs stats
                                                       #  (primary + ESPN gap-fill)
     python -m sportsedge.cli line-movement            # price drift by time-to-kickoff
+    python -m sportsedge.cli fill-quality             # does the liquidity gate
+                                                      #  reject quotes that move
+                                                      #  against you?
     python -m sportsedge.cli scorecard                 # model vs market vs reality
     python -m sportsedge.cli discrimination-report     # calibration, or ranking?
     python -m sportsedge.cli context-report            # does non-Elo info rank better?
@@ -57,6 +60,7 @@ from sportsedge.betting import liquidity, recommend as recommend_mod, settle as 
 from sportsedge.betting import ledger as ledger_mod
 from sportsedge.betting import scorecard
 from sportsedge.betting import line_movement
+from sportsedge.betting import fill_quality
 from sportsedge.betting.ledger import summarize
 
 SPORT_TO_LEAGUE_KEY = {"nfl": "nfl", "soccer": "epl"}
@@ -513,6 +517,12 @@ def cmd_line_movement(args):
     print(json.dumps(out, indent=2, default=str))
 
 
+def cmd_fill_quality(args):
+    """Does a liquidity-gate rejection predict a quote that moves against you?"""
+    out = {sp: fill_quality.summarize(sp) for sp in args.sports}
+    print(json.dumps(out, indent=2, default=str))
+
+
 def cmd_ledger_summary(_args):
     print(json.dumps(summarize(), indent=2, default=str))
 
@@ -666,6 +676,11 @@ def build_parser():
                        help="price drift by time-to-kickoff (is a T-8h CLV cut stale?)")
     p.add_argument("--sports", nargs="+", default=["nfl", "soccer"])
     p.set_defaults(func=cmd_line_movement)
+
+    p = sub.add_parser("fill-quality",
+                       help="does the liquidity gate reject quotes that move against you?")
+    p.add_argument("--sports", nargs="+", default=["nfl", "soccer"])
+    p.set_defaults(func=cmd_fill_quality)
 
     p = sub.add_parser("scorecard",
                        help="settled bets vs what the model AND the market expected")

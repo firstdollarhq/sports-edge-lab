@@ -5,11 +5,34 @@ A research project testing predictive sports models against real market odds.
 to find a real, validated edge, not to confirm a bias. See `journal/` for an
 honest, dated log of what was tried and what happened.
 
-## Status (2026-09-16, scheduled run #13)
+## Status (2026-09-16, scheduled run #14)
 
-- **0 live bets. 25 settled shadow bets (6 wins), 26 pending, 67 void.**
+- **0 live bets. 25 settled shadow bets (6 wins), 28 pending, 67 void.**
   Headline win rate **24.0%**, ROI **-20.87%**. Still 25 settled wagers; it
-  settles nothing on its own.
+  settles nothing on its own. NFL week 2 opens 09-17, so nothing settled today.
+- **The liquidity gate is validated on NFL and does nothing measurable on
+  EPL.** It had gated every price this project ever recommended without once
+  being checked. Measured as quote persistence over 5,122 NFL and 3,540 EPL
+  consecutive-capture pairs: a gate-rejected NFL quote raises its ask by at
+  least a tick before the next capture **16.9%** of the time against **6.2%**
+  for an accepted one, a gap of **+10.7pp**, CI **[+6.4, +16.4]** resampling
+  *contracts* rather than quotes. The 5% relative-width rule **in isolation**
+  — the one run 13 named as unvalidated — is **+18.1pp, CI [+7.6, +32.3]**.
+  On EPL the same test reads **+1.6pp, CI [-0.4, +5.6]**: nothing.
+  `cli fill-quality`. **This is quote persistence, not fill quality** — no
+  order has ever been placed, and none can be while `live_enabled` is false.
+- **The gate has never rejected a quote near kickoff.** 0 of 1,084 NFL
+  rejections and 1 of 880 EPL ones sit inside T-72h; depth builds as a game
+  approaches. It is a filter on early boards — which is where this ledger
+  works, 57% of its non-void rows priced more than 72h out.
+- **A float comparison was under-counting the venue's most common move.**
+  `0.41 - 0.40` is `0.00999999999999995`, so `delta >= 0.01` is *False* for an
+  exact one-tick rise, while `0.33 - 0.32` rounds the other way and registers.
+  Every number in the two bullets above moved when it was fixed, and the EPL
+  width-rule figure **changed sign** (-1.4pp to +0.8pp; both straddle zero, so
+  the conclusion held and the sign I would have reported did not). Caught by a
+  test written after the analysis, not before. Prices are integers on this
+  venue and are now compared as integers.
 - **ESPN's date-range API disappeared and was replaced the same run.** The
   `YYYYMMDD-YYYYMMDD` scoreboard form now returns HTTP 400 for every range on
   both leagues — probed down to a 7-day window, while single days, months and
@@ -257,6 +280,10 @@ entirely plausible.
 3. Drop any quote that isn't actually fillable (`betting/liquidity.py`: spread,
    resting size, traded volume, extreme prices). On EPL this currently removes
    ~⅓ of contracts — pricing off a stale book manufactures fake edges.
+   Validated in run 14 against quote persistence (`cli fill-quality`): on NFL
+   the rejected quotes really are the ones that move against you; **on EPL the
+   same test finds nothing**, so that league's thresholds are buying coverage
+   loss without buying reliability. Unchanged pending a backtest.
 4. `edge_pct = model_prob * decimal_odds - 1`, **priced at the ask**, not the
    mid. The ask is what you'd actually pay; using the mid silently credits the
    model with half the spread on every bet. A paper bet is only logged if edge
@@ -652,9 +679,18 @@ corrupts the record.
   price that might not be pre-game.
 - The two sports fail for *different* reasons: NFL is under-dispersed
   (model sd 0.132 vs market 0.187); EPL's dispersion is already fine.
-- ~~Kalshi liquidity filter~~ -- **done** (`betting/liquidity.py`). The 5%
-  relative-width gate remains unvalidated against realized fill quality, and
-  it has now voided real bets.
+- ~~Kalshi liquidity filter~~ -- **done** (`betting/liquidity.py`).
+  ~~The 5% relative-width gate remains unvalidated against realized fill
+  quality~~ -- **partly closed in run 14** (`cli fill-quality`). Realized fill
+  quality is not observable here and will not be while `live_enabled` is
+  false; what is observable is quote persistence, and on that test the gate
+  separates cleanly on NFL (**+10.7pp** more likely to move a tick against
+  you, CI [+6.4, +16.4]; the width rule alone **+18.1pp**, CI [+7.6, +32.3])
+  and not at all on EPL (**+1.6pp**, CI [-0.4, +5.6]). **Nothing was changed
+  on the strength of it.** The EPL null is an argument for looking at that
+  league's thresholds, not for loosening them: this instrument says what a
+  quote *does*, not what a looser gate would do to ROI, and that is a
+  backtest. `PRICING_VERSION` is frozen until 09-21 in any case.
 - **Needs the owner: nothing.** No charge and no signup form is outstanding.
   Both previously-listed items are closed on the merits (see the rejected-
   sources table above) and should not be re-raised. When a source is needed,

@@ -57,12 +57,25 @@ def _bucket_label(hours: float, edges) -> str | None:
     return None
 
 
-def collect_quotes(sport: str, *, buckets=DEFAULT_BUCKETS) -> pd.DataFrame:
+def collect_quotes(sport: str, *, buckets=DEFAULT_BUCKETS,
+                   keep_cols: tuple[str, ...] = ()) -> pd.DataFrame:
     """Every captured pre-kickoff quote, tagged with its time-to-kickoff.
 
     In-play captures are dropped, not bucketed as "T-0": the cron runs through
     the slate, so a large share of the raw rows are post-kickoff, and a price
     that already knows part of the result is not a line movement.
+
+    `keep_cols` copies additional raw snapshot columns onto each row. It exists
+    so that a caller needing the rest of the order book -- `betting.fill_quality`
+    needs bid, sizes and volume to re-run the liquidity gate -- gets them from
+    HERE rather than re-deriving kickoff for itself. Kickoff resolution is the
+    one step in this project that has silently produced in-play quotes when
+    re-derived (run 13), so it lives in exactly one place.
+
+    Note on `buckets`: a quote whose time-to-kickoff falls outside the widest
+    edge is DROPPED, so a caller interested in the far end of the board (the
+    NFL books that open ~290h out) must widen the edges or it will silently
+    lose them.
     """
     df = snapshots.load_snapshots(sport)
     if df is None or df.empty:
@@ -98,7 +111,7 @@ def collect_quotes(sport: str, *, buckets=DEFAULT_BUCKETS) -> pd.DataFrame:
         label = _bucket_label(hours, buckets)
         if label is None:
             continue
-        rows.append({
+        row = {
             "market_ticker": rec.get("market_ticker"),
             "event_ticker": event,
             "fetched_at": at,
@@ -106,7 +119,10 @@ def collect_quotes(sport: str, *, buckets=DEFAULT_BUCKETS) -> pd.DataFrame:
             "kickoff": ko,
             "yes_ask": float(ask),
             "bucket": label,
-        })
+        }
+        for col in keep_cols:
+            row[col] = rec.get(col)
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
