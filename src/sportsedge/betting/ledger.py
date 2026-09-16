@@ -374,6 +374,62 @@ def _clv_by_reference_quality(settled: pd.DataFrame) -> dict:
         "clv_stale_reference_n": int(len(stale)),
         "clv_unknown_reference_n": int(lag.isna().sum()),
         "clv_reference_max_lag_h": CLV_REFERENCE_MAX_LAG_H,
+        "clv_resolution": _clv_resolution(rows),
+    }
+
+
+# Kalshi quotes whole cents, so the smallest expressible price change is 0.01
+# of implied probability. Nothing about a price can be measured finer than this.
+KALSHI_TICK = 0.01
+
+
+def _clv_resolution(rows: pd.DataFrame) -> dict:
+    """What one tick is worth, in the same units `clv_pct` is reported in.
+
+    WHY THIS IS REPORTED NEXT TO THE CLV MEAN, ALWAYS.
+    Runs 10, 11 and 12 each quoted a mean CLV -- most recently -1.14% over 16
+    real closes -- as an independent line of evidence about the model. Run 13
+    measured what that number can possibly contain, and the answer is: less
+    than one tick.
+
+    `clv_pct` is `(placed_odds / closing_odds - 1) * 100` in DECIMAL odds, so
+    a one-cent move is worth different amounts at different prices: ~2% at a
+    0.50 contract, ~3% at 0.35, ~7% at 0.15. At the prices this ledger
+    actually paid, one tick is ~3% -- nearly three times the headline mean,
+    and half the settled rows closed at exactly the price they were struck at,
+    giving a median CLV of precisely 0.000%.
+
+    A mean that is a fraction of the smallest change the venue can express is
+    not a measurement of the model. It is which side of a tick eight rows
+    happened to land on. Reporting `mean_abs_ticks` alongside the mean is what
+    makes that visible without a reader having to re-derive it, and it is
+    cheaper than the alternative this project keeps paying for -- three runs
+    of treating quantisation noise as a signal.
+    """
+    placed = pd.to_numeric(rows.get("market_odds_decimal"), errors="coerce")
+    close = pd.to_numeric(rows.get("closing_odds_decimal"), errors="coerce")
+    clv = pd.to_numeric(rows["clv_pct"], errors="coerce")
+    ok = placed.notna() & (placed > 0) & clv.notna()
+    if not ok.any():
+        return {"n": 0}
+
+    p = 1.0 / placed[ok]                      # implied probability paid
+    # Value of one tick, in clv_pct units, at each row's own price. Guarded
+    # because a contract priced at or below one tick has no cheaper neighbour.
+    room = (p - KALSHI_TICK).where(p > KALSHI_TICK)
+    tick_pct = ((p / room - 1) * 100).dropna()
+    if tick_pct.empty:
+        return {"n": int(ok.sum())}
+
+    moved = ((1.0 / close[ok] - p).abs() >= KALSHI_TICK / 2) if close.notna().any() else None
+    return {
+        "n": int(ok.sum()),
+        "tick": KALSHI_TICK,
+        "mean_price_paid": float(p.mean()),
+        "one_tick_as_clv_pct": float(tick_pct.mean()),
+        "median_clv_pct": float(clv[ok].median()),
+        "mean_abs_ticks": float((clv[ok].abs() / tick_pct).mean()),
+        "share_unmoved": (None if moved is None else float(1 - moved.mean())),
     }
 
 

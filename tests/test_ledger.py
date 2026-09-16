@@ -195,3 +195,69 @@ def test_backfill_dry_run_writes_nothing(tmp_ledger):
                 edge_pct=33.33, stake=1.0, market_ticker="T-1", pricing_version="p2")
     assert led.backfill_after_fee_edges(0.07, dry_run=True)["filled"] == 1
     assert led._load()["edge_after_fee_pct"].isna().all()
+
+
+# --- CLV resolution: is the headline mean bigger than one tick? -------------
+
+def test_clv_resolution_prices_one_tick_in_clv_units(tmp_path, monkeypatch):
+    """A one-cent move is worth more CLV on a longshot than on a coin-flip.
+
+    Pinned with hand-checkable numbers because the whole point of the field is
+    to be compared against the CLV mean, and a wrong scale would make a real
+    signal look like noise just as easily as the reverse.
+    """
+    monkeypatch.setattr(ledger_mod, "LEDGER_PATH", tmp_path / "ledger.csv")
+
+    # Struck at 0.50 (decimal 2.0), closed one tick better at 0.51.
+    bet = _add(ledger_mod.SHADOW, market_odds_decimal=2.0)
+    ledger_mod.record_result(bet, "won", closing_odds_decimal=1.0 / 0.51)
+
+    res = ledger_mod.summarize()["shadow"]["clv_resolution"]
+    assert res["n"] == 1
+    assert res["tick"] == 0.01
+    assert res["mean_price_paid"] == pytest.approx(0.50)
+    # 0.50 / 0.49 - 1 = 2.04%
+    assert res["one_tick_as_clv_pct"] == pytest.approx(2.0408, abs=1e-3)
+    # The row moved exactly one tick, so |clv| should be ~1 tick.
+    assert res["mean_abs_ticks"] == pytest.approx(1.0, abs=0.05)
+    assert res["share_unmoved"] == pytest.approx(0.0)
+
+
+def test_clv_resolution_flags_a_ledger_that_never_moved(tmp_path, monkeypatch):
+    """Half this project's settled rows closed at the price they were struck
+    at, making the median CLV exactly 0.000%.
+
+    Runs 10-12 each quoted a sub-tick CLV mean as evidence about the model.
+    This asserts the counter-evidence travels with it: a ledger of unmoved
+    rows must report `share_unmoved == 1` and a median of exactly zero, so a
+    future run cannot read the mean without seeing what it is made of.
+    """
+    monkeypatch.setattr(ledger_mod, "LEDGER_PATH", tmp_path / "ledger.csv")
+
+    for i, odds in enumerate((2.0, 3.0, 5.0)):
+        bet = _add(ledger_mod.SHADOW, game_id=f"g{i}", market_odds_decimal=odds)
+        ledger_mod.record_result(bet, "lost", closing_odds_decimal=odds)
+
+    shadow = ledger_mod.summarize()["shadow"]
+    assert shadow["avg_clv_pct"] == pytest.approx(0.0)
+    res = shadow["clv_resolution"]
+    assert res["n"] == 3
+    assert res["median_clv_pct"] == 0.0
+    assert res["mean_abs_ticks"] == pytest.approx(0.0)
+    assert res["share_unmoved"] == pytest.approx(1.0)
+
+
+def test_clv_resolution_survives_a_contract_priced_under_one_tick(tmp_path, monkeypatch):
+    """A 1c contract has no cheaper neighbour, so 'one tick better' is not a
+    price. It must not divide by zero or drop the whole report."""
+    monkeypatch.setattr(ledger_mod, "LEDGER_PATH", tmp_path / "ledger.csv")
+
+    bet = _add(ledger_mod.SHADOW, market_odds_decimal=100.0)   # 0.01
+    ledger_mod.record_result(bet, "lost", closing_odds_decimal=100.0)
+    other = _add(ledger_mod.SHADOW, game_id="g2", market_odds_decimal=2.0)
+    ledger_mod.record_result(other, "lost", closing_odds_decimal=2.0)
+
+    res = ledger_mod.summarize()["shadow"]["clv_resolution"]
+    assert res["n"] == 2
+    # The 1c row contributes no tick value; the 50c row still does.
+    assert res["one_tick_as_clv_pct"] == pytest.approx(2.0408, abs=1e-3)

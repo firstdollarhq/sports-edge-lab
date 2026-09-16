@@ -151,9 +151,30 @@ rediscovered:
   This repo commits daily, so it will not trigger; if capture ever goes
   silent, check that first.
 
-**Raise the cadence if the evidence asks for it.** Once there are captures
-inside the final hour, measure how much the line actually moves there. If it
-moves a lot, `*/15` costs nothing on a public repo.
+**Cadence stays at `*/30` -- ASKED AND ANSWERED, run 13 (2026-09-16).**
+The standing instruction here was to measure the final hour once captures
+existed inside it and go to `*/15` if the line moved a lot. The captures now
+exist -- NFL closing quotes at a median of T-0.42h, EPL at T-0.12h at best --
+and the line does not move:
+
+| bucket | NFL mean abs move | EPL mean abs move | share moving >= 0.02 |
+|---|---|---|---|
+| T-1h..T-2h | 0.0036 | 0.0050 | 0% both |
+| T-2h..T-4h | 0.0036 | 0.0067 | 0% both |
+
+Over the *entire* pre-kickoff window (median first capture T-74h, 29 captures
+per NFL contract) the mean absolute net move is **0.0157** for NFL and
+**0.0107** for EPL, and **30% of NFL contracts never moved a single tick**.
+The venue quotes whole cents, so the final two hours are moving less than the
+smallest change the venue can express. `*/15` would resolve movement that is
+not there. **Do not raise it without a new reason; a thicker book or a second
+venue would be one, "we have not tried it" is not.**
+
+The same measurement retires a metric -- see run 13's journal entry. CLV at
+this venue is quantisation noise at current sample sizes, and
+`ledger-summary` now prints `clv_resolution` next to the CLV mean so that is
+visible without re-deriving it. **Do not quote a CLV mean without the tick
+value beside it.**
 
 ## Branch hygiene
 

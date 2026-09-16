@@ -28,11 +28,15 @@ consumed in exactly two places:
     a fixture -- which is the CLV blocker above.
 
 Free, unauthenticated, no account. `site.api.espn.com` is the undocumented
-endpoint behind espn.com's own scoreboard; it takes a `dates=YYYYMMDD` day or
-a `YYYYMMDD-YYYYMMDD` range and needs no key. Undocumented means it can change
-without notice, which is exactly why it is a cross-check and a fallback rather
-than a primary: if it disappears, verification gets louder and nothing that
-was already correct becomes wrong.
+endpoint behind espn.com's own scoreboard and needs no key. Undocumented means
+it can change without notice, which is exactly why it is a cross-check and a
+fallback rather than a primary: if it disappears, verification gets louder and
+nothing that was already correct becomes wrong.
+
+That is not hypothetical any more -- see `_months_covering` below. Run 13
+found the `YYYYMMDD-YYYYMMDD` range form this module was built on returning
+HTTP 400 for every range, with single-day requests still fine. The fetch now
+walks whole months instead.
 
 Per CLAUDE.md the bar for a new source is "free, no human-created account, and
 verified against something we already hold before any number derived from it
@@ -51,7 +55,7 @@ schedule row with null scores.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import requests
@@ -183,23 +187,72 @@ def _season_label(sport: str, event: dict) -> str | None:
 
 
 def _date_param(start: str, end: str | None) -> str:
-    """'2026-09-12' -> '20260912'; a range when `end` is given."""
+    """'2026-09-12' -> '20260912'; a range when `end` is given.
+
+    RETAINED BUT NO LONGER USED FOR FETCHING. ESPN rejects the range form it
+    builds (see `_months_covering`). Kept because it is the exact string that
+    stopped working, and a future run wondering whether the range is back can
+    call it rather than reconstructing the format from this comment.
+    """
     a = start.replace("-", "")
     if end is None:
         return a
     return f"{a}-{end.replace('-', '')}"
 
 
-def fetch_espn_scoreboard(sport: str, start: str, end: str | None = None,
+def _months_covering(start: str, end: str) -> list[str]:
+    """Every 'YYYYMM' month touched by the inclusive window [start, end].
+
+    WHY MONTHS, AND NOT THE RANGE THIS MODULE WAS WRITTEN AGAINST.
+    On 2026-09-16 `refresh-history` began warning for both sports:
+
+        400 Client Error: Bad Request ... dates=20260801-20261007
+
+    The body reads `{"code":400,"message":"Failed to get events endpoint."}`.
+    Measured rather than guessed, because "undocumented endpoint returned 400"
+    has several plausible causes and they imply different fixes:
+
+      * every range fails, down to a ten-day one, on both sports -- so it is
+        the range SYNTAX, not the window width and not a rate limit;
+      * `dates=20260914` (single day) returns 200;
+      * `dates=202609` (month) returns 200;
+      * `dates=2026` (year) returns 200;
+      * `dates=20260914,20260915` (comma list) returns 400.
+
+    So the day-range form is simply gone. Both survivors could work. Months
+    win on request count: the default window is ~67 days, which is 3 requests
+    by month against 67 by day, and this runs twice per refresh.
+
+    The risk in fetching coarser than you filter is that the coarse call
+    silently returns less -- a `limit` truncation would look exactly like a
+    quiet league. So month-vs-day equivalence was CHECKED, not assumed, over
+    2026-09 for both sports: 48 NFL events and 30 EPL events by month, the
+    same 48 and 30 by union of thirty day-requests, zero ids in one and not
+    the other. `test_months_covering_*` pins the arithmetic here; the network
+    equivalence is recorded in run 13's journal entry, since a test cannot
+    assert it without hitting ESPN.
+    """
+    lo = datetime.strptime(start, "%Y-%m-%d")
+    hi = datetime.strptime(end, "%Y-%m-%d")
+    if hi < lo:
+        raise ValueError(f"end {end!r} precedes start {start!r}")
+    months, y, m = [], lo.year, lo.month
+    while (y, m) <= (hi.year, hi.month):
+        months.append(f"{y}{m:02d}")
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return months
+
+
+def fetch_espn_scoreboard(sport: str, dates: str,
                           *, session: requests.Session | None = None,
                           timeout: int = 30) -> dict:
-    """Raw scoreboard payload for a date or inclusive date range."""
+    """Raw scoreboard payload for one `dates` value ('YYYYMMDD' or 'YYYYMM')."""
     if sport not in _LEAGUE_PATH:
         raise ValueError(f"Unsupported sport: {sport!r}")
     get = (session or requests).get
     resp = get(
         SCOREBOARD_URL.format(path=_LEAGUE_PATH[sport]),
-        params={"dates": _date_param(start, end), "limit": 400},
+        params={"dates": dates, "limit": 400},
         timeout=timeout,
         headers={"Accept": "application/json"},
     )
@@ -296,9 +349,60 @@ def parse_scoreboard(sport: str, payload: dict) -> pd.DataFrame:
 
 
 def fetch_espn_games(sport: str, start: str, end: str | None = None,
+                     *, session: requests.Session | None = None,
                      **kwargs) -> pd.DataFrame:
-    """Fetch + normalise in one call."""
-    return parse_scoreboard(sport, fetch_espn_scoreboard(sport, start, end, **kwargs))
+    """Fetch + normalise the inclusive window [start, end] in one call.
+
+    Walks whole months (see `_months_covering`) and trims back to the window,
+    so the returned frame is what the old day-range call returned rather than
+    whole calendar months.
+
+    Two deliberate choices in that trim:
+
+      * **The window is widened by a day at each end before trimming.** ESPN
+        dates an event by US local date; this table's `game_date` is derived
+        from the UTC kickoff, and a Sunday-night NFL kickoff is Monday in UTC.
+        Trimming hard on the UTC date would drop exactly the late games at
+        each boundary. A day of slack cannot drop a fixture the old call
+        returned, and the worst it adds is a boundary day of *schedule* rows,
+        which the audit ignores because it only compares games both sources
+        report as played.
+      * **A month that fails is fatal, not skipped.** This module's standing
+        rule is that a missing fixture must never be able to look like an
+        agreeing one; a silently dropped month would remove games from the
+        audit's denominator rather than showing up in it. The CLI already
+        catches this and keeps the previously committed table, which is the
+        loud-but-safe behaviour we want.
+    """
+    end = end or start
+    own_session = session is None
+    session = session or requests.Session()
+    try:
+        frames = [
+            parse_scoreboard(sport, fetch_espn_scoreboard(sport, month,
+                                                          session=session, **kwargs))
+            for month in _months_covering(start, end)
+        ]
+    finally:
+        if own_session:
+            session.close()
+
+    df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if df.empty:
+        return df
+
+    # Months overlap nothing, but a fixture rescheduled across a month
+    # boundary can appear twice under one id. Keep the first.
+    df = df.drop_duplicates(subset="game_id", keep="first")
+
+    lo = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    hi = (datetime.strptime(end, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    df = df[(df["game_date"] >= lo) & (df["game_date"] <= hi)]
+
+    return (df.assign(_k=pd.to_datetime(df["kickoff_utc"], utc=True))
+              .sort_values(["_k", "home_team"])
+              .drop(columns="_k")
+              .reset_index(drop=True))
 
 
 # --- Verification against the source we already hold ------------------------

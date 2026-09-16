@@ -194,6 +194,59 @@ def test_audit_ignores_primary_rows_outside_the_espn_window():
 
 def test_date_param_single_day_vs_range():
     """A start with no end is a ONE DAY request -- which silently returned an
-    empty table and reported success."""
+    empty table and reported success.
+
+    `_date_param` no longer builds the URL (ESPN 400s on the range form as of
+    run 13); this pins the string that stopped working so a future run can
+    re-probe it without reconstructing the format from a comment.
+    """
     assert espn._date_param("2026-08-01", None) == "20260801"
     assert espn._date_param("2026-08-01", "2026-09-13") == "20260801-20260913"
+
+
+def test_months_covering_spans_the_window_inclusively():
+    assert espn._months_covering("2026-08-01", "2026-10-07") == ["202608", "202609", "202610"]
+    assert espn._months_covering("2026-09-14", "2026-09-14") == ["202609"]
+
+
+def test_months_covering_crosses_a_year_boundary():
+    """An EPL season spans December. Rolling the month without rolling the
+    year would fetch 202613, which is not a month."""
+    assert espn._months_covering("2026-11-20", "2027-01-05") == [
+        "202611", "202612", "202701"]
+
+
+def test_months_covering_rejects_a_backwards_window():
+    with pytest.raises(ValueError):
+        espn._months_covering("2026-10-07", "2026-08-01")
+
+
+def test_fetch_walks_months_and_trims_to_the_window(monkeypatch):
+    """The month fetch must not leak whole calendar months into the table."""
+    payloads = {
+        "202608": {"events": [_event("1", "2026-08-15T14:00Z", "ARS", "CHE")]},
+        "202609": {"events": [_event("2", "2026-09-05T14:00Z", "LIV", "TOT")]},
+    }
+    asked = []
+
+    def fake(sport, dates, **kwargs):
+        asked.append(dates)
+        return payloads[dates]
+
+    monkeypatch.setattr(espn, "fetch_espn_scoreboard", fake)
+    df = espn.fetch_espn_games("soccer", "2026-08-20", "2026-09-30")
+
+    assert asked == ["202608", "202609"]
+    # The August fixture is inside the months fetched but outside the window.
+    assert list(df["game_id"]) == ["espn_soccer_2"]
+
+
+def test_fetch_keeps_a_late_kickoff_at_the_window_edge(monkeypatch):
+    """ESPN dates an event locally; `game_date` here is UTC. A Sunday-night
+    NFL kickoff lands on Monday in UTC, so a hard trim on the last day of the
+    window would drop exactly the games the range form used to return."""
+    monkeypatch.setattr(espn, "fetch_espn_scoreboard", lambda sport, dates, **kw: {
+        "events": [_event("9", "2026-09-15T00:20Z", "LAR", "WSH", year=2026)],
+    })
+    df = espn.fetch_espn_games("nfl", "2026-09-01", "2026-09-14")
+    assert list(df["game_id"]) == ["espn_nfl_9"]
