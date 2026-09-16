@@ -151,11 +151,13 @@ rediscovered:
   This repo commits daily, so it will not trigger; if capture ever goes
   silent, check that first.
 
-**Cadence stays at `*/30` -- ASKED AND ANSWERED, run 13 (2026-09-16).**
-The standing instruction here was to measure the final hour once captures
-existed inside it and go to `*/15` if the line moved a lot. The captures now
-exist -- NFL closing quotes at a median of T-0.42h, EPL at T-0.12h at best --
-and the line does not move:
+**Cadence stays at `*/30` -- ASKED AND ANSWERED. Do not re-raise.**
+This section previously told each run to measure the final hour "once there
+are captures inside it" and consider `*/15`. **That was already stale when
+written: run 9 measured it on 26 NFL contracts and rejected `*/15`, and the
+README has said so since.** Run 13 (2026-09-16) replicated it on a second
+slate and closed the instruction. NFL closing quotes now sit at a median of
+T-0.42h, EPL at T-0.12h at best, and the line does not move:
 
 | bucket | NFL mean abs move | EPL mean abs move | share moving >= 0.02 |
 |---|---|---|---|
@@ -170,11 +172,17 @@ smallest change the venue can express. `*/15` would resolve movement that is
 not there. **Do not raise it without a new reason; a thicker book or a second
 venue would be one, "we have not tried it" is not.**
 
-The same measurement retires a metric -- see run 13's journal entry. CLV at
-this venue is quantisation noise at current sample sizes, and
-`ledger-summary` now prints `clv_resolution` next to the CLV mean so that is
-visible without re-deriving it. **Do not quote a CLV mean without the tick
-value beside it.**
+**Read every CLV mean against the tick.** One 1c tick is worth ~3% `clv_pct`
+at the prices this ledger pays, so the -1.14% real-close figure is 0.38 of a
+tick and the median is exactly 0.000%. `ledger-summary` now prints a
+`clv_resolution` block next to the mean. **Do not quote a CLV mean without
+the tick value beside it, and do not treat a sub-tick reading as a magnitude.**
+
+This does **not** mean CLV is unmeasurable here -- run 13 nearly recorded that
+and the arithmetic refused it. The real-close cohort's SE is already 1.03%,
+inside half a tick; ~30 rows would resolve a quarter tick. The instrument
+works and currently reads **no detectable edge**. Say that, not "CLV is
+noise".
 
 ## Branch hygiene
 

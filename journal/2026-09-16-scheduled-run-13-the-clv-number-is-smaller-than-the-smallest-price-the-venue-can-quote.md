@@ -13,11 +13,21 @@ _2026-09-16, 06:01-07:5xZ. Run 12 was 2026-09-15, 15:02-16:5xZ._
    checking that months return the same event set day-by-day requests do.
    ESPN is live again and the audit reproduces run 12's counts exactly.
 
-2. **CLV is retired as a line of evidence, with a number.** The 30-minute cron
-   has finally put captures inside the final hour, which is what runs 7 and 12
-   said had to happen before the question could be asked. The answer is that
-   the line does not move -- and the same measurement says the CLV mean this
-   project has quoted for three runs is **0.38 of one tick**.
+2. **The CLV mean is put on a scale, and the scale is the tick.** The -1.14%
+   this project has quoted for three runs is **0.38 of one Kalshi tick**, and
+   the median is exactly 0.000%. `ledger-summary` now reports that context
+   next to the mean.
+
+**A correction to this entry's own first draft, kept because the mistake is
+instructive.** I initially wrote Finding 2 up as "CLV is retired as evidence
+-- the metric cannot measure anything here". That is wrong, and I caught it
+by computing the standard error instead of asserting the conclusion. **The
+real-close cohort's SE is already 1.03%, which is below half a tick.** CLV is
+therefore *not* unmeasurable at this venue; it is measured, and it currently
+reads as no detectable edge. Those are different claims and the second is
+weaker. The overclaim would have retired a working instrument on the strength
+of a rhetorically satisfying sentence, which is the exact failure mode this
+journal exists to prevent.
 
 **No bets settled. Two new shadow rows logged.** The ledger's headline numbers
 are unchanged from runs 11 and 12: 25 settled, 6 wins, **24.0%**, ROI
@@ -25,13 +35,23 @@ are unchanged from runs 11 and 12: 25 settled, 6 wins, **24.0%**, ROI
 
 Tests **248 -> 256**.
 
-## Finding 1: the pre-kickoff line barely moves, so `*/30` stays
+## Finding 1: the line barely moves over the *whole* window, not just the last hour
 
-CLAUDE.md carried a standing instruction: once there are captures inside the
-final hour, measure how much the line moves there, and go to `*/15` if it
-moves a lot. Both conditions are now testable. NFL closing captures sit at a
-median of **T-0.42h**, with 29 captures per contract over a median 74-hour
-window.
+**Credit where it is due, and a stale instruction found in the process.** Run
+9 already measured the final hour on 26 NFL contracts and already rejected
+`*/15`; the README records both. **CLAUDE.md, however, still carried the
+question as open** -- "once there are captures inside the final hour, measure
+how much the line actually moves there... if it moves a lot, `*/15` costs
+nothing". That is a settled question presented as a live one, which is the
+precise failure CLAUDE.md's own standing instruction warns about. It is now
+marked answered there, with the numbers.
+
+So the final-hour figures below are a **replication on a second slate** (28
+NFL contracts against run 9's 26), not a discovery. What is new is the
+whole-window measurement underneath it.
+
+NFL closing captures sit at a median of **T-0.42h**, with 29 captures per
+contract over a median 74-hour window.
 
 Moves to the closing quote, in implied-probability points:
 
@@ -56,10 +76,14 @@ And over the **whole** pre-kickoff window, first capture to close:
 | \|net\| >= 0.05 | 6.7% | 0.0% |
 
 Kalshi quotes whole cents. The final two hours are therefore moving *less than
-the smallest change the venue can express*, and the entire information flow
-from three days out to kickoff is one to two probability points. **`*/15` would
-resolve movement that is not there. Cadence stays at `*/30`**, and CLAUDE.md
-now records that as answered rather than open.
+the smallest change the venue can express* -- confirming run 9 on fresh data --
+and **the new part is the bottom half of that table**: the entire information
+flow from three days out to kickoff is one to two probability points, and
+nearly a third of NFL contracts never move at all. Run 9 established that the
+final hour is quiet; this establishes that the whole pre-kickoff window is,
+which is a stronger and more useful statement. **`*/15` stays rejected and
+cadence stays at `*/30`**, now recorded as answered in CLAUDE.md rather than
+left open there.
 
 **The honest caveat on the EPL column:** the final-hour bucket is 6 contracts
 and the T-2h..T-4h bucket is 3. That is not a fact about the EPL market; it is
@@ -85,7 +109,7 @@ because it is the thirteenth instance of this project's recurring failure --
 a value that is not what the surrounding code assumed -- and this time the
 guard that caught it was an existing module's docstring.**
 
-## Finding 2: the CLV mean is quantisation noise, and now says so in the report
+## Finding 2: the CLV mean is a third of a tick, and now says so in the report
 
 Runs 10, 11 and 12 each quoted a mean CLV as an independent read on the model,
 most recently **-1.14% over 16 real closes**. Finding 1 implies that number
@@ -108,13 +132,38 @@ Half the settled rows closed at exactly the price they were struck at, which is
 why the median is not merely small but exactly zero. Both confidence intervals
 straddle zero.
 
-So `-1.14%` is not a measurement of the model. It is which side of a tick eight
-rows happened to land on. **This does not rehabilitate the model** -- the
-ROI, the win rate, the discrimination bound and the selection gap are all
-untouched and all still negative. It removes one *apparently independent*
-negative number from the pile, which matters in the other direction too: a
-future run that saw CLV turn positive would have been entitled to call it
-evidence, and it would not have been.
+### What that does and does not license -- the correction in full
+
+The tempting conclusion is "CLV cannot measure anything here, retire it".
+**That conclusion is wrong and the arithmetic says so.** The real-close
+cohort's standard deviation is 4.107%, so at n=16 the standard error is
+**1.027% -- already below half a tick.** What it would take to do better:
+
+| target precision | required real-close rows |
+|---|---|
+| SE < one tick (3.02%) | 2 |
+| SE < half a tick (1.51%) | **8 (already met)** |
+| SE < a quarter tick (0.76%) | **30** |
+
+So the instrument works. The cohort is 16 rows and **~30 would resolve a
+quarter-tick effect** -- roughly two more NFL weekends, not a distant
+prospect. This discharges the README's standing instruction to "decide once
+the real-close cohort is large enough to have a usable standard error": it is
+large enough for a half-tick read *now*, and the read is **no detectable CLV
+edge**, mean -1.14% with a CI of [-3.25, +0.64] spanning about 1.3 ticks.
+
+The honest claim is therefore narrower than the first draft's: **do not quote
+-1.14% as though its magnitude meant something** -- it is a third of the
+smallest change the venue can express, and half the rows contributing to it
+never moved at all -- but CLV remains a live instrument reading approximately
+zero, not a dead one.
+
+**None of this rehabilitates the model.** ROI, win rate, the discrimination
+bound and the selection gap are untouched and all still negative. What changes
+is that one number in that pile should be read as "no signal detected at
+±1 tick" rather than as an independent negative -- and that cuts both ways: a
+future run seeing CLV turn mildly positive would not have been entitled to
+call that evidence either.
 
 `ledger-summary` now prints a `clv_resolution` block next to the CLV mean --
 tick value at the prices paid, median, mean |CLV| in ticks, and the share of
@@ -281,6 +330,14 @@ fix used the same free, keyless source it already had.
   is now the weaker half of that pair, measured rather than assumed.
 - **The EPL final-hour buckets are 3 and 6 contracts.** Re-measure after the
   09-19/20 slate before treating the EPL column as anything but suggestive.
+- **CLV needs ~14 more real-close rows to resolve a quarter tick** (30 total,
+  16 today). That is about two NFL weekends. Re-read it then, and read it
+  against `clv_resolution`, not on its own.
+- **Two stale instructions were found and closed this run**, both in CLAUDE.md:
+  the snapshot cadence question (answered by run 9, still written as open) and
+  the implicit licence to quote a bare CLV mean. Worth a periodic sweep --
+  a standing instruction that has already been answered is worse than no
+  instruction, because it spends a run re-deriving a settled result.
 - **Score the pre-registered cohort at 36 on 09-21 and treat that as the
   read.** Do not re-score the partial cohort; runs 12 and 13 did not.
 - **After 09-21, `PRICING_VERSION` is free to move**, unchanged since run 10.
@@ -298,9 +355,9 @@ fix used the same free, keyless source it already had.
   **-20.87%**. The market beats the model on every scoring rule on the bets the
   model itself chose; the model ranks games significantly worse than the
   closing line; the free information that was supposed to close that gap makes
-  it wider; and as of today the one metric that had been mildly ambiguous is
-  not ambiguous but simply too coarse to read. That is the deployment gate
-  doing its job, and it is still 25 wagers.
+  it wider; and the one metric that had been mildly ambiguous now reads, at
+  half-tick precision, as no detectable edge either way. That is the deployment
+  gate doing its job, and it is still 25 wagers.
 
 ## Process note
 

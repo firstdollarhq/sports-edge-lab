@@ -5,11 +5,37 @@ A research project testing predictive sports models against real market odds.
 to find a real, validated edge, not to confirm a bias. See `journal/` for an
 honest, dated log of what was tried and what happened.
 
-## Status (2026-09-15, scheduled run #12)
+## Status (2026-09-16, scheduled run #13)
 
-- **0 live bets. 25 settled shadow bets (6 wins), 24 pending, 67 void.**
-  Headline win rate **24.0%**, ROI **-20.87%**. Still 25 wagers; it settles
-  nothing on its own.
+- **0 live bets. 25 settled shadow bets (6 wins), 26 pending, 67 void.**
+  Headline win rate **24.0%**, ROI **-20.87%**. Still 25 settled wagers; it
+  settles nothing on its own.
+- **ESPN's date-range API disappeared and was replaced the same run.** The
+  `YYYYMMDD-YYYYMMDD` scoreboard form now returns HTTP 400 for every range on
+  both leagues — probed down to a 7-day window, while single days, months and
+  years all return 200, so it is the range *syntax*. `fetch_espn_games` walks
+  whole months and trims to the window. Month-vs-day equivalence was checked
+  before being relied on (48 NFL / 30 EPL events either way, zero ids in one
+  and not the other), and both committed ESPN tables came out **byte-identical**
+  to the range-fetched version. The cross-check source degraded loudly and
+  nothing already correct became wrong — which is what it was designed to do.
+- **The CLV mean is 0.38 of a tick, and that is how it should be read.** One
+  1c Kalshi tick is worth ~3.02% `clv_pct` at the prices this ledger pays, so
+  the -1.14% real-close figure is a third of the smallest change the venue can
+  express; the **median is exactly 0.000%** and **half the settled rows closed
+  at the price they were struck at**. `ledger-summary` now prints a
+  `clv_resolution` block beside the mean. **This does not mean CLV is
+  unmeasurable here** — run 13's first draft said so and the arithmetic refused
+  it: SE is already **1.03%**, inside half a tick, and ~30 real-close rows
+  would resolve a quarter tick. The instrument works and reads **no detectable
+  edge**, CI [-3.25, +0.64].
+- **The whole pre-kickoff window is quiet, not just the final hour.** Run 9
+  showed the last hour barely moves; run 13 replicated that on a second slate
+  (28 NFL contracts) and measured the rest: over a median 74h window with 29
+  captures per contract, mean |net move| is **0.0157** (NFL) and **0.0107**
+  (EPL), and **30% of NFL contracts never move a single tick**. This is
+  evidence against the one direction run 12 left open — a line that never moves
+  is not a line leaving late information unpriced.
 - **The free information Elo cannot see makes the ranking worse, not better —
   so run 11's proposed direction is now itself a rejected change.** nflverse
   ships rest, short weeks, divisional games, neutral sites, roof, weather and
@@ -599,8 +625,15 @@ corrupts the record.
   blended average cannot be quoted as a measurement. Given a market whose
   entire observed movement inside two hours is one cent, the open question is
   no longer "is the CLV number believable" but "can CLV measure anything
-  here". **Decide it once the real-close cohort is large enough to have a
-  usable standard error — not before.**
+  here". ~~Decide it once the real-close cohort is large enough to have a
+  usable standard error — not before.~~ **Decided in run 13: yes, it can.**
+  The cohort's SD is 4.107%, so at n=16 the SE is **1.027% — already inside
+  half a tick**, and ~30 real-close rows (about two more NFL weekends) would
+  resolve a quarter tick. The reading is **no detectable CLV edge**: mean
+  -1.14%, CI [-3.25, +0.64], a span of ~1.3 ticks. What is *not* licensed is
+  quoting the -1.14% as a magnitude — it is 0.38 of a tick, and half the rows
+  behind it never moved. `clv_resolution` in `ledger-summary` carries that
+  context so it cannot be dropped again.
 - ~~Kalshi's fee coefficient is unread~~ -- **read and verified in run 10 at
   exactly 0.07**, by inverting Kalshi's own worked example rather than finding
   a page that states it. See "The fee is reported, not enforced" above.
