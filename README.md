@@ -5,24 +5,53 @@ A research project testing predictive sports models against real market odds.
 to find a real, validated edge, not to confirm a bias. See `journal/` for an
 honest, dated log of what was tried and what happened.
 
-## Status (2026-09-17, scheduled run #15)
+## Status (2026-09-17, scheduled run #16)
 
-- **0 live bets. 25 settled shadow bets (6 wins), 31 pending, 67 void.**
+- **0 live bets. 25 settled shadow bets (6 wins), 32 pending, 67 void.**
   Headline win rate **24.0%**, ROI **-20.87%**. Still 25 settled wagers; it
-  settles nothing on its own. NFL week 2 opens **09-18T00:15Z** (run 14 said
-  09-17; ESPN's schedule is the correction), so nothing settled today.
+  settles nothing on its own. **Nothing has settled in five runs** — NFL week 2
+  opens **09-18T00:15Z**, hours after run 16 ended.
 - **football-data.co.uk — the only EPL results and closing-odds source this
-  project has — is DOWN.** Every path on the host, `www` and apex alike,
-  redirects to `http://127.0.0.1/`. An upstream misconfiguration; no key would
-  fix it. `refresh-history` used to raise inside its EPL step and never reach
-  the ESPN refresh or the SQLite rebuild behind it, and `recommend --sports
-  soccer` raised before pricing anything. Both now degrade instead: the
-  committed table is used, and **the fallback is gated on an independent
+  project has — is DOWN**, ~33h as of run 16. Every path on the host, `www` and
+  apex alike, redirects to `http://127.0.0.1/`. An upstream misconfiguration;
+  no key would fix it. `refresh-history` used to raise inside its EPL step and
+  never reach the ESPN refresh or the SQLite rebuild behind it, and `recommend
+  --sports soccer` raised before pricing anything. Both now degrade instead:
+  the committed table is used, and **the fallback is gated on an independent
   source rather than a clock** — usable iff ESPN reports no played game the
-  table is missing (today: gap **0 of 40**). An age check would have passed
-  here *and* would pass the case that matters, because the EPL table was 15h
-  old and complete. **Deadline 09-19**: when the next EPL results land, a
-  still-dead source means the gate correctly refuses to price EPL.
+  table is missing (gap **0 of 40** on both runs). An age check would have
+  passed here *and* would pass the case that matters, because the EPL table was
+  15h old and complete.
+- **The EPL rating path no longer depends on that host (run 16).** When the
+  committed table falls behind, `ingest/sources` now fills the gap with ESPN's
+  played games, in memory, at load time. `build_soccer_model` reads season,
+  date, teams, scores and result — **not one odds column** — and ESPN carries
+  all of them. Verified on the real tables, not a fixture: truncate the
+  committed table to before 09-11, refill from ESPN, and the rating book comes
+  back **identical — 30 clubs, max difference 0.0**, with all 10 recovered
+  scores matching what football-data.co.uk itself said.
+  - **The cost is stated, not hidden.** The gate was worth something because
+    ESPN was an *independent* check on someone else's table; for a supplemented
+    row it is both filler and checker. The pre-fill gap is kept beside the
+    post-fill gap and printed in the run log, so a supplemented run cannot read
+    like one that needed no supplement.
+  - **Three refusals** keep it safe: the gap counter and the gap filler share
+    one matcher (a date-vs-kickoff mismatch would have appended a second copy
+    of a game and double-counted it in every downstream rating); a club the
+    rating book has never seen is refused rather than opened as a second Elo
+    entity at default rating, which is what an upstream rename would otherwise
+    do silently; and the supplement never reaches a backtest, since
+    `cli._load_games` reads the committed table directly and odds-free rows are
+    holes, not games.
+  - **It is dormant until 09-19.** No EPL fixture falls between 09-14 and
+    09-19, so run 16 exercised none of it and priced exactly as run 15 did.
+- **The outage is not destroying an irreplaceable record.** The
+  bookmaker-average closing line is lost for fixtures played during it, but the
+  9 EPL events at/after 09-19 already hold **5,049 captured Kalshi quotes** in
+  `data/snapshots/`, and run 5 measured the two venues pricing the same games
+  the same way (corr 0.9955). Reconstructing an EPL closing line from the
+  snapshot store is real work, is possible from committed data at any later
+  date, and is therefore not urgent.
 - **The model's spectacular early-board edges are a book that has not opened
   yet — and the ones that survive that never decay at all.** Run 14 left "the
   gate rejects early boards, the model's biggest edges appear on early boards,
@@ -651,21 +680,34 @@ corrupts the record.
   Nothing found so far suggests a public-data team-strength model beats this
   closing line. That is a finding, not a failure — but adding further features
   without a reason to expect a different outcome would be.
-- **Run 15 was asked for a model idea with a stated reason to expect a
-  different outcome, and it has none. Said plainly rather than papered over.**
-  Three consecutive runs have produced apparatus findings only. That is the
-  right call when the apparatus is wrong — and it is also what a project with
-  no model ideas left looks like.
+- **Runs 15 and 16 were each asked for a model idea with a stated reason to
+  expect a different outcome, and neither has one. Said plainly rather than
+  papered over.** **Four consecutive runs have produced apparatus findings
+  only.** That is the right call when the apparatus is wrong — run 16's source
+  failover is why a dead upstream did not stop the project — and it is also
+  what a project with no model ideas left looks like. Both remain true.
 - **The measurable question nobody has asked yet:** the flagged cohort's mean
   claimed edge is ~34% and its realized ROI is -20.87%. The gap between
   *claimed* edge and *realized* return is this project's actual subject and has
   never been regressed as such. Doable with what is already committed, once the
   settled book is larger than 25.
-- **football-data.co.uk is down; the deadline is 09-19.** If it has not
-  recovered when the next EPL results land, the fallback gate will correctly
-  refuse to price EPL. The fix is to wire EPL results from ESPN into the rating
-  path (odds columns stay missing for new fixtures, which the live model does
-  not use) or to find another free mirror. Not an escalation.
+- ~~**football-data.co.uk is down; the deadline is 09-19.**~~ — **met in run
+  16**, ahead of the deadline: EPL results from ESPN now fill the gap in the
+  rating path, verified to reproduce the real rating book exactly (see Status).
+  Odds columns stay missing for new fixtures, which the live model does not
+  read. **09-19 is still the first live exercise of it** — expect the table to
+  fall behind by a matchday and the fill to close it; a non-zero residual gap
+  takes EPL dark and `espn_supplement.unknown_teams` is the first thing to
+  read. The source itself is still down and **still not an escalation**.
+- **A non-GitHub mirror of the football-data CSVs has not been looked for.**
+  Run 16 could not check the GitHub-hosted ones — that session's GitHub access
+  was scoped to this repository alone — so this is a fact about that runner,
+  not about what mirrors exist. A run with wider access should re-check before
+  concluding anything.
+- **Reconstructing an EPL closing line from `data/snapshots/`** is the standing
+  way to keep the EPL backtest sample growing while the source is dead. Not
+  urgent: the quotes are already captured and committed, so it can be done from
+  committed data at any later date (see Status).
 - **The opening-book measurement is NFL-only, on 32 contracts.** No EPL
   contract listed during the capture window. Do not quote it as a fact about
   the venue until an EPL listing has been watched.

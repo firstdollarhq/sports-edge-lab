@@ -250,3 +250,47 @@ def test_fetch_keeps_a_late_kickoff_at_the_window_edge(monkeypatch):
     })
     df = espn.fetch_espn_games("nfl", "2026-09-01", "2026-09-14")
     assert list(df["game_id"]) == ["espn_nfl_9"]
+
+
+def test_unmatched_played_returns_exactly_what_the_audit_counts():
+    """The counter and the filler must never disagree by a fixture.
+
+    `ingest/sources.py` gates a degraded run on `audit_against_primary`'s
+    `only_espn` and then fills that gap with `unmatched_played`'s rows. If the
+    two used different matchers, the fill would either miss a game the gate
+    demanded or append one the table already had. They share `_aligned` and
+    `_primary_hit`; this pins the consequence rather than the implementation.
+    """
+    cols = ["season", "game_date", "home_team", "away_team",
+            "home_score", "away_score", "kickoff_utc"]
+    primary = pd.DataFrame([
+        ["2026-27", "2026-09-12", "Arsenal", "Chelsea", 2.0, 1.0, "2026-09-12T14:00:00+00:00"],
+    ], columns=cols)
+    espn_side = pd.DataFrame([
+        # matched
+        ["2026-27", "2026-09-12", "Arsenal", "Chelsea", 2.0, 1.0, "2026-09-12T14:00:00+00:00"],
+        # played, unmatched -> both the count and the rows
+        ["2026-27", "2026-09-16", "Spurs", "Fulham", 3.0, 1.0, "2026-09-16T19:00:00+00:00"],
+        # unplayed, unmatched -> counted by neither: a fixture, not a gap
+        ["2026-27", "2026-09-20", "Leeds", "Burnley", None, None, "2026-09-20T13:00:00+00:00"],
+    ], columns=cols)
+
+    played = espn_side.dropna(subset=["home_score", "away_score"])
+    audit = espn.audit_against_primary(played, primary)
+    rows = espn.unmatched_played(espn_side, primary)
+
+    assert audit["only_espn"] == len(rows) == 1
+    assert list(rows["home_team"]) == ["Spurs"]
+
+
+def test_unmatched_played_ignores_fixtures_with_no_score():
+    """An early listing is not a results gap, and has no score to import."""
+    cols = ["season", "game_date", "home_team", "away_team",
+            "home_score", "away_score", "kickoff_utc"]
+    primary = pd.DataFrame([
+        ["2026-27", "2026-09-12", "Arsenal", "Chelsea", 2.0, 1.0, "2026-09-12T14:00:00+00:00"],
+    ], columns=cols)
+    espn_side = pd.DataFrame([
+        ["2026-27", "2026-09-20", "Leeds", "Burnley", None, None, "2026-09-20T13:00:00+00:00"],
+    ], columns=cols)
+    assert espn.unmatched_played(espn_side, primary).empty
