@@ -5,11 +5,60 @@ A research project testing predictive sports models against real market odds.
 to find a real, validated edge, not to confirm a bias. See `journal/` for an
 honest, dated log of what was tried and what happened.
 
-## Status (2026-09-16, scheduled run #14)
+## Status (2026-09-17, scheduled run #15)
 
-- **0 live bets. 25 settled shadow bets (6 wins), 28 pending, 67 void.**
+- **0 live bets. 25 settled shadow bets (6 wins), 31 pending, 67 void.**
   Headline win rate **24.0%**, ROI **-20.87%**. Still 25 settled wagers; it
-  settles nothing on its own. NFL week 2 opens 09-17, so nothing settled today.
+  settles nothing on its own. NFL week 2 opens **09-18T00:15Z** (run 14 said
+  09-17; ESPN's schedule is the correction), so nothing settled today.
+- **football-data.co.uk — the only EPL results and closing-odds source this
+  project has — is DOWN.** Every path on the host, `www` and apex alike,
+  redirects to `http://127.0.0.1/`. An upstream misconfiguration; no key would
+  fix it. `refresh-history` used to raise inside its EPL step and never reach
+  the ESPN refresh or the SQLite rebuild behind it, and `recommend --sports
+  soccer` raised before pricing anything. Both now degrade instead: the
+  committed table is used, and **the fallback is gated on an independent
+  source rather than a clock** — usable iff ESPN reports no played game the
+  table is missing (today: gap **0 of 40**). An age check would have passed
+  here *and* would pass the case that matters, because the EPL table was 15h
+  old and complete. **Deadline 09-19**: when the next EPL results land, a
+  still-dead source means the gate correctly refuses to price EPL.
+- **The model's spectacular early-board edges are a book that has not opened
+  yet — and the ones that survive that never decay at all.** Run 14 left "the
+  gate rejects early boards, the model's biggest edges appear on early boards,
+  and nobody has put a number on the two together" as the next work. Both
+  halves, from `cli edge-decay`:
+  - **32 of 32 NFL contracts whose listing was actually watched opened OUTSIDE
+    the liquidity gate** — median spread **22.5c**, median volume **0**, median
+    ask size **4** — and took a median **568 minutes** to produce a tradeable
+    quote. Across that stub the ask moves a median **0.070** and the claimed
+    edge a median **12.0pp**. For scale, run 13 put the mean |net move| over
+    the *entire rest* of the pre-kickoff window at **0.0157**. NFL-only: the
+    EPL board listed nothing new during the capture window.
+  - **Anchored at the first gate-passing quote, claimed edge does not decay.**
+    NFL flagged sides **34.1% → 33.2%**, mean change **-0.84pp, CI
+    [-8.39, +4.96]**; EPL **24.3% → 22.5%, -1.81pp, CI [-5.83, +2.24]**.
+    Decomposed, neither the market leg nor the model leg moves. On the 12 NFL
+    contracts whose window actually finished, **24.2% → 23.8%** at a median
+    T-0.42h.
+  - **So the winner's curse is not a thin-book artifact.** The gate already
+    removes the thin-book period; what is left is a tight, deep, unmoving book
+    that the model disagrees with by a third of its own price for ten days.
+  - **The first draft of that module reported the opposite and was wrong.**
+    Anchored on each contract's *first* capture it found claimed edge GROWING
+    by **+20.0pp, CI [+11.6, +31.6]** on gate-rejected contracts. Arithmetically
+    correct, and entirely the opening stub: a wide book prices both sides as
+    negative edge, so the edge "grows" when it tightens. Nothing was published
+    from that pass; the fix was the anchor, not the arithmetic.
+- **`bets/ledger.csv` was being altered by the act of reading it.**
+  `ledger._load` used pandas' default CSV float parser, which is not correctly
+  rounded, so every `recommend` and every `settle` perturbed cells nothing had
+  touched (two of them on 09-17). **Run 11 diagnosed and fixed this exact
+  defect for `data/processed/` and `data/snapshots/` and left it in the one
+  file the project is about.** Now read with `float_precision="round_trip"`,
+  pinned by a test that asserts the **committed file** is byte-identical after
+  a load/save cycle — a synthetic fixture would have passed while the real file
+  failed, because which cells drift depends on the decimals the file holds.
 - **The liquidity gate is validated on NFL and does nothing measurable on
   EPL.** It had gated every price this project ever recommended without once
   being checked. Measured as quote persistence over 5,122 NFL and 3,540 EPL
@@ -199,7 +248,7 @@ honest, dated log of what was tried and what happened.
 | Need | Source | Cost | Notes |
 |---|---|---|---|
 | NFL schedules, scores, closing lines (historical) | [nflverse](https://github.com/nflverse/nfl_data_py) | Free, no key | Ships actual closing moneyline/spread/total per game. Also ships the pre-kickoff context run 12 tested and rejected (rest, divisional, neutral site, roof, surface, temp, wind, starting QB) — carried since run 12, **never read by Elo** |
-| Soccer results + closing odds (historical) | [football-data.co.uk](https://www.football-data.co.uk/) | Free, no key | CSV per league/season; uses bookmaker-average (`Avg*`) columns when available |
+| Soccer results + closing odds (historical) | [football-data.co.uk](https://www.football-data.co.uk/) | Free, no key | CSV per league/season; uses bookmaker-average (`Avg*`) columns when available. **DOWN since 2026-09-17** — every path redirects to `http://127.0.0.1/`. The committed table is used instead, and only while ESPN confirms it is missing no played game (`ingest/sources.py`). |
 | **Live market odds (both sports, ongoing)** | **[Kalshi](https://kalshi.com)** public REST API | **Free, no key** | CFTC-regulated exchange; read-only market data needs no auth. Each contract's dollar price *is* the market-implied probability. `KXNFLGAME` / `KXEPLGAME` series. |
 | **Settlement cross-check + kickoff times (both sports)** | **[ESPN public scoreboard](https://site.api.espn.com/apis/site/v2/sports/)** | **Free, no key** | Undocumented endpoint behind espn.com's scoreboard. Schedules and results only — **no odds, never feeds the model**. Publishes within minutes of full time, where football-data.co.uk publishes in batches days later. Verified against the primary source: 30/30 scores and 30/30 kickoffs agree (`cli espn-audit`). |
 
@@ -221,6 +270,10 @@ leagues we're starting with, so it's now the primary live-odds source.
 src/sportsedge/
   ingest/       nfl_stats.py, soccer_stats.py (historical), kalshi.py (live odds)
                 teams.py (Kalshi ticker -> stats-source team resolution)
+                espn.py (settlement cross-check + kickoffs; carries no odds)
+                sources.py (what to do when an upstream stats source is down:
+                            degrade to the committed table, but only while an
+                            independent source says it is missing nothing)
   models/       elo.py (rating engines), calibration.py (soccer 3-way outcome calibration)
                 live.py (current-strength ratings for pricing today's games)
                 features.py (pre-kickoff context: rest/venue/weather/QB — TESTED
@@ -234,6 +287,10 @@ src/sportsedge/
                 scorecard.py (settled bets vs model AND market, effective n)
                 liquidity.py (is this quote fillable?), recommend.py (model vs market)
                 settle.py (resolve bets, compute CLV)
+                line_movement.py (price drift by time-to-kickoff)
+                fill_quality.py (does a gate rejection predict an adverse move?)
+                edge_decay.py (does a claimed edge survive to kickoff? as-of
+                               model, no lookahead; market leg vs model leg)
   journal/      entry.py (dated markdown journal entries)
   storage/      db.py + schema.sql (SQLite historical database)
                 snapshots.py (committed odds capture — see below)
@@ -369,6 +426,9 @@ python -m sportsedge.cli settle               # resolve finished games, fill CLV
 python -m sportsedge.cli verify-settlements   # cross-check Kalshi vs stats source
 python -m sportsedge.cli scorecard            # model vs market vs reality on
                                               # settled bets, with effective_n
+python -m sportsedge.cli edge-decay           # does a claimed edge survive the
+                                              # walk to kickoff, or is it a book
+                                              # that has not opened yet?
 ```
 
 `scorecard` is the one that answers the project's actual question. A low win
@@ -584,12 +644,31 @@ corrupts the record.
 ## Open questions / next steps
 
 - **The honest null is now the leading hypothesis, and it is stated as one.**
-  Twelve runs, 150+ configurations, a hard AUC bound retiring every
-  recalibration-shaped change (run 11), and a negative result on the obvious
-  non-Elo information (run 12). Nothing found so far suggests a public-data
-  team-strength model beats this closing line. That is a finding, not a
-  failure — but adding further features without a reason to expect a different
-  outcome would be.
+  Fifteen runs, 150+ configurations, a hard AUC bound retiring every
+  recalibration-shaped change (run 11), a negative result on the obvious
+  non-Elo information (run 12), and run 15's finding that the market does not
+  move toward this model over the entire tradeable window at either league.
+  Nothing found so far suggests a public-data team-strength model beats this
+  closing line. That is a finding, not a failure — but adding further features
+  without a reason to expect a different outcome would be.
+- **Run 15 was asked for a model idea with a stated reason to expect a
+  different outcome, and it has none. Said plainly rather than papered over.**
+  Three consecutive runs have produced apparatus findings only. That is the
+  right call when the apparatus is wrong — and it is also what a project with
+  no model ideas left looks like.
+- **The measurable question nobody has asked yet:** the flagged cohort's mean
+  claimed edge is ~34% and its realized ROI is -20.87%. The gap between
+  *claimed* edge and *realized* return is this project's actual subject and has
+  never been regressed as such. Doable with what is already committed, once the
+  settled book is larger than 25.
+- **football-data.co.uk is down; the deadline is 09-19.** If it has not
+  recovered when the next EPL results land, the fallback gate will correctly
+  refuse to price EPL. The fix is to wire EPL results from ESPN into the rating
+  path (odds columns stay missing for new fixtures, which the live model does
+  not use) or to find another free mirror. Not an escalation.
+- **The opening-book measurement is NFL-only, on 32 contracts.** No EPL
+  contract listed during the capture window. Do not quote it as a fact about
+  the venue until an EPL listing has been watched.
 - **What would actually be a different bet:** information the closing line
   prices *late* or prices *badly*, not information it prices perfectly. Every
   feature run 12 tested is on the market's screen too, and the line-movement
