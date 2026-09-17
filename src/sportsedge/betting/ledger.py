@@ -90,8 +90,33 @@ _ID_COLUMNS = {"bet_id": str, "game_id": str, "market_ticker": str}
 
 
 def _load() -> pd.DataFrame:
+    """Read the ledger. `float_precision="round_trip"` is not optional here.
+
+    pandas' default CSV float parser is fast but not correctly rounded, so a
+    read/write cycle PERTURBS values it never touched: on 2026-09-17 the file
+    round-tripped two cells (a kelly_fraction of 0.020623908061536977 came back
+    as 0.0206239080615369) purely by being loaded and saved. The ledger is
+    written by `recommend` and by `settle`, so that happens on every run and
+    compounds.
+
+    `storage.snapshots` diagnosed and fixed this for the game tables and the
+    odds snapshots in run 11 -- see `_read_float_note` there, which found 585
+    of 2,499 NFL rows drifting on every refresh. The same defect was still
+    sitting in the one file the whole project is about, for the same reason it
+    survived there: the numbers do not matter at 1e-16, and the two things that
+    follow from them do.
+
+      1. It makes `git diff` lie about the bet record. A row that changed
+         because a bet SETTLED is supposed to be visible next to rows that did
+         not change at all.
+      2. `bets/ledger.csv` is the evidence. Altering it as a side effect of
+         reading it is the thing this project cannot do.
+
+    Verified by `test_ledger_round_trip.py`: the committed file is byte-identical
+    after a load/save cycle.
+    """
     if LEDGER_PATH.exists():
-        df = pd.read_csv(LEDGER_PATH, dtype=_ID_COLUMNS)
+        df = pd.read_csv(LEDGER_PATH, dtype=_ID_COLUMNS, float_precision="round_trip")
         return df.astype(object).where(pd.notnull(df), None)
     return pd.DataFrame(columns=COLUMNS).astype(object)
 

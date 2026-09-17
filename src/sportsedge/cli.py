@@ -29,6 +29,8 @@
     python -m sportsedge.cli fill-quality             # does the liquidity gate
                                                       #  reject quotes that move
                                                       #  against you?
+    python -m sportsedge.cli edge-decay               # does a claimed edge
+                                                      #  survive to kickoff?
     python -m sportsedge.cli scorecard                 # model vs market vs reality
     python -m sportsedge.cli discrimination-report     # calibration, or ranking?
     python -m sportsedge.cli context-report            # does non-Elo info rank better?
@@ -39,6 +41,7 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
+import sys
 from datetime import timedelta
 
 import pandas as pd
@@ -50,6 +53,7 @@ from sportsedge.ingest.soccer_stats import fetch_soccer_games
 from sportsedge.ingest.kalshi import snapshot_moneylines, snapshot_nfl_moneylines, snapshot_epl_moneylines
 from sportsedge.ingest import espn
 from sportsedge.ingest import kickoff as kickoff_mod
+from sportsedge.ingest import sources
 from sportsedge.models.elo import NflEloModel, SoccerEloModel
 from sportsedge.models.live import build_nfl_model, build_soccer_model
 from sportsedge.backtest.engine import backtest_nfl, backtest_soccer
@@ -61,6 +65,7 @@ from sportsedge.betting import ledger as ledger_mod
 from sportsedge.betting import scorecard
 from sportsedge.betting import line_movement
 from sportsedge.betting import fill_quality
+from sportsedge.betting import edge_decay
 from sportsedge.betting.ledger import summarize
 
 SPORT_TO_LEAGUE_KEY = {"nfl": "nfl", "soccer": "epl"}
@@ -80,6 +85,17 @@ def cmd_ingest_soccer(args):
     with db.get_conn() as conn:
         n = db.upsert_games(conn, games.to_dict("records"))
     print(f"Ingested {n} {args.league} games ({games['season'].nunique()} seasons)")
+
+
+def _warn(msg: str) -> None:
+    """Warnings go to stderr, not stdout.
+
+    Several commands print nothing but a JSON document, and a `[warn]` line on
+    stdout makes that document unparseable by anything downstream. The EPL
+    source outage of 2026-09-17 put one in front of every `edge-decay` and
+    `verify-settlements` run.
+    """
+    print(msg, file=sys.stderr)
 
 
 def _nfl_season_labels(seasons):
@@ -108,21 +124,45 @@ def _load_games(table, seasons, label_fn, fetch, *fetch_args):
     filtered = df[df["season"].astype(str).isin(wanted)]
     missing = wanted - set(filtered["season"].astype(str))
     if missing:
-        print(f"[warn] no rows for seasons: {sorted(missing)}")
+        _warn(f"[warn] no rows for seasons: {sorted(missing)}")
     if filtered.empty:
         raise SystemExit(f"No games for seasons {sorted(wanted)} in {table}")
     return filtered
 
 
 def cmd_refresh_history(args):
-    """Rebuild the durable historical game tables from the free upstream sources."""
-    nfl = fetch_nfl_games(args.nfl_seasons)
-    path, n = snapshots.write_processed("nfl_games", nfl)
-    print(f"nfl_games -> {path} ({n} rows, {int(nfl['home_score'].notna().sum())} played)")
+    """Rebuild the durable historical game tables from the free upstream sources.
 
-    epl = fetch_soccer_games("E0", args.epl_seasons)
-    path, n = snapshots.write_processed("epl_games", epl)
-    print(f"epl_games -> {path} ({n} rows)")
+    Every upstream step is independently fault-tolerant, and the command still
+    exits non-zero if any of them failed. Before 2026-09-17 the two primary
+    fetches ran bare: football-data.co.uk started redirecting every request to
+    `http://127.0.0.1/`, `fetch_soccer_games` raised, and the ESPN refresh and
+    SQLite rebuild that follow it never ran. One dead source took down the
+    refresh of three live ones, and the fix for that is not to trust the dead
+    source less but to stop letting it speak for the others.
+    """
+    failures = []
+
+    def _refresh(label, table, fetch, *fetch_args):
+        """Fetch and write one table; on failure keep whatever is committed."""
+        try:
+            df = fetch(*fetch_args)
+        except Exception as exc:  # noqa: BLE001 -- a dead source is data, not a crash
+            failures.append(f"{label}: {type(exc).__name__}: {exc}")
+            _warn(f"[warn] {label} refresh failed ({exc}); keeping existing table")
+            try:
+                return snapshots.read_processed(table)
+            except FileNotFoundError:
+                _warn(f"[warn] and no committed {table} to fall back to")
+                return None
+        path, n = snapshots.write_processed(table, df)
+        played = int(df["home_score"].notna().sum())
+        print(f"{table} -> {path} ({n} rows, {played} played)")
+        return df
+
+    nfl = _refresh("nflverse", "nfl_games", fetch_nfl_games, args.nfl_seasons)
+    epl = _refresh("football-data.co.uk", "epl_games",
+                   fetch_soccer_games, "E0", args.epl_seasons)
 
     # ESPN schedules/results. Deliberately written to their OWN tables and
     # never merged into the two above: those carry the closing odds the model
@@ -147,14 +187,14 @@ def cmd_refresh_history(args):
         try:
             games = espn.fetch_espn_games(sport, args.espn_start, espn_end)
         except Exception as exc:  # a cross-check source must never break refresh
-            print(f"[warn] ESPN {sport} refresh failed ({exc}); keeping existing table")
+            _warn(f"[warn] ESPN {sport} refresh failed ({exc}); keeping existing table")
             continue
         if games.empty:
             # Never let an empty fetch overwrite a populated table. An upstream
             # hiccup should look like a warning, not like a league with no
             # fixtures -- the second is indistinguishable from "nothing to
             # verify" at every downstream call site.
-            print(f"[warn] ESPN {sport} returned 0 games for "
+            _warn(f"[warn] ESPN {sport} returned 0 games for "
                   f"{args.espn_start}..{espn_end}; keeping existing table")
             continue
         path, n = snapshots.write_processed(table, games)
@@ -163,10 +203,19 @@ def cmd_refresh_history(args):
 
     db.init_db()
     with db.get_conn() as conn:
-        db.upsert_games(conn, nfl.where(nfl.notna(), None).to_dict("records"))
-        db.upsert_games(conn, epl.where(epl.notna(), None).to_dict("records"))
+        for df in (nfl, epl):
+            if df is not None:
+                db.upsert_games(conn, df.where(df.notna(), None).to_dict("records"))
     print("SQLite cache rebuilt from the committed tables.")
     kickoff_mod.clear_cache()
+
+    # Loud at the end, after everything that COULD be refreshed has been. A
+    # partial refresh that exits 0 is the failure mode this whole function was
+    # rewritten to avoid: the tables on disk look fine and nobody is told that
+    # one of them is yesterday's.
+    if failures:
+        raise SystemExit("refresh incomplete -- kept the committed table for:\n  "
+                         + "\n  ".join(failures))
 
 
 def cmd_espn_audit(args):
@@ -356,13 +405,36 @@ def cmd_snapshot_odds(args):
     print(json.dumps(total, indent=2, default=str))
 
 
-def _load_games_for(sport: str):
+def _rating_games(sport: str):
+    """Rating-season games plus a provenance dict saying where they came from.
+
+    Used by `recommend` and by `verify-settlements`, which is to say by every
+    path that prices or checks a LIVE board. It fetches upstream and falls back
+    to the committed table only when upstream is down -- and the fallback is
+    gated on ESPN reporting no played game the table is missing, so a league
+    whose results have actually moved on cannot be priced from a stale rating
+    set. See ingest/sources.py for why that gate is a game count and not a
+    timestamp.
+    """
     key = SPORT_TO_LEAGUE_KEY[sport]
     league_cfg = config.league(key)
     seasons = league_cfg["rating_seasons"]
     if sport == "nfl":
-        return fetch_nfl_games([int(s) for s in seasons])
-    return fetch_soccer_games(league_cfg["league_code"], [str(s) for s in seasons])
+        return sources.load_games(sport, [int(s) for s in seasons], _nfl_season_labels,
+                                  fetch_nfl_games, [int(s) for s in seasons])
+    codes = [str(s) for s in seasons]
+    return sources.load_games(sport, codes, _epl_season_labels, fetch_soccer_games,
+                              league_cfg["league_code"], codes)
+
+
+def _load_games_for(sport: str):
+    """Back-compat wrapper: games only, raising if they cannot be trusted."""
+    games, prov = _rating_games(sport)
+    if not prov["usable"]:
+        raise SystemExit(sources.describe(prov))
+    if prov["degraded"]:
+        _warn(f"[warn] {sources.describe(prov)}")
+    return games
 
 
 def cmd_recommend(args):
@@ -375,7 +447,18 @@ def cmd_recommend(args):
     out = {}
     for sport in args.sports:
         key = SPORT_TO_LEAGUE_KEY[sport]
-        games = _load_games_for(sport)
+        games, prov = _rating_games(sport)
+        if prov["degraded"]:
+            _warn(f"[warn] {sources.describe(prov)}")
+        if not prov["usable"]:
+            # Capture the board anyway -- odds are irreplaceable and the model
+            # is not involved in capturing them -- then decline to price it.
+            # A price from rating data that is behind the league is worse than
+            # no price, because it is indistinguishable from a real one.
+            snapshots.append_snapshot(snapshot_moneylines(sport), sport=sport)
+            out[sport] = {"skipped": "rating data not usable",
+                          "provenance": prov, "logged": 0}
+            continue
         rows = snapshot_moneylines(sport)
         snapshots.append_snapshot(rows, sport=sport)
 
@@ -437,6 +520,7 @@ def cmd_recommend(args):
             "mode": mode, "live_enabled": live,
             "logged": logged, "skipped_duplicate": skipped,
             "flagged_rate_pct": round(100 * len(recs) / max(1, len(rows)), 1),
+            "provenance": prov,
         }
         for r in sorted(recs, key=lambda x: -x["edge_pct"])[:args.top]:
             after = r.get("edge_after_fee_pct")
@@ -520,6 +604,22 @@ def cmd_line_movement(args):
 def cmd_fill_quality(args):
     """Does a liquidity-gate rejection predict a quote that moves against you?"""
     out = {sp: fill_quality.summarize(sp) for sp in args.sports}
+    print(json.dumps(out, indent=2, default=str))
+
+
+def cmd_edge_decay(args):
+    """Does a claimed edge survive the walk to kickoff, once the book is open?"""
+    out = {}
+    for sport in args.sports:
+        games, prov = _rating_games(sport)
+        if prov["degraded"]:
+            _warn(f"[warn] {sources.describe(prov)}")
+        if not prov["usable"]:
+            out[sport] = {"skipped": "rating data not usable", "provenance": prov}
+            continue
+        out[sport] = edge_decay.summarize(sport, games=games,
+                                          min_span_hours=args.min_span_hours)
+        out[sport]["provenance"] = prov
     print(json.dumps(out, indent=2, default=str))
 
 
@@ -700,6 +800,13 @@ def build_parser():
     p.add_argument("--sweep-regularization", action="store_true",
                    help="is the degradation overfitting? sweep the L2 penalty")
     p.set_defaults(func=cmd_context_report)
+
+    p = sub.add_parser("edge-decay",
+                       help="does a claimed edge survive to kickoff, or is it "
+                            "an un-opened book?")
+    p.add_argument("--sports", nargs="+", default=["nfl", "soccer"])
+    p.add_argument("--min-span-hours", type=float, default=edge_decay.MIN_SPAN_HOURS)
+    p.set_defaults(func=cmd_edge_decay)
 
     p = sub.add_parser("ledger-summary")
     p.set_defaults(func=cmd_ledger_summary)
