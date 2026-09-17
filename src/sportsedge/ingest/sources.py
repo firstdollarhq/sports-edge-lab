@@ -93,6 +93,87 @@ def _missing_played_games(sport: str, games: pd.DataFrame) -> dict:
             "espn_table_last_changed_at": _last_changed_at(ref)}
 
 
+def _supplement_from_espn(sport: str, games: pd.DataFrame,
+                          wanted) -> tuple[pd.DataFrame, dict]:
+    """Fill a results gap in the committed table with ESPN's played games.
+
+    WHY. The gate above refuses to price a league whose committed table is
+    behind reality. That is the right refusal when there is nothing to be done
+    about it, but from 2026-09-19 it would have silenced EPL pricing entirely
+    on a table that is missing only SCORES -- and scores are the one thing the
+    live rating path actually consumes. `models/live.build_soccer_model` reads
+    season, game_date, home_team, away_team, home_score, away_score, result.
+    Not one odds column. ESPN carries every one of those fields, has agreed
+    with the primary source on 40/40 EPL and 16/16 NFL games this run, and is
+    already trusted to decide settlement (`cli._verification_games` fills the
+    same kind of gap the same way).
+
+    WHAT THIS COSTS, stated plainly because it is a real weakening. Before
+    this, ESPN was an INDEPENDENT check on a table built by someone else: it
+    could only ever say "you are behind", never supply the number. For rows
+    added here it is both the filler and the checker, so `usable` after a
+    supplement means "the table agrees with ESPN", which is trivially true of
+    rows that came from ESPN. The check retains its force for the primary
+    table's own rows and loses it for these. Two things keep that honest:
+
+      * `freshness` (the gap BEFORE) is kept next to `freshness_after_supplement`,
+        so the provenance shows what was filled rather than a clean zero, and
+        `describe()` prints the supplemented count in the run log.
+      * A supplemented row is tagged `source='espn'` and carries NaN in every
+        odds column, so anything that prices or backtests from odds drops it
+        rather than reading a blank as a number.
+
+    WHAT IT MUST NOT REACH. Backtests train on closing odds and go through
+    `cli._load_games`, which reads the committed table directly and never
+    calls this module -- so odds-free rows cannot enter a backtest sample.
+    That separation is the whole reason the supplement is in-memory and this
+    function never writes to `data/processed/`. Pinned by
+    `test_supplement_does_not_reach_backtest_loader`.
+    """
+    info = {"available": False, "rows": 0, "games": [], "no_odds": True}
+    try:
+        ref = snapshots.read_processed(ESPN_TABLE[sport])
+    except (FileNotFoundError, KeyError):
+        return games, info
+
+    info["available"] = True
+    ref = ref[ref["season"].astype(str).isin(wanted)]
+    extra = espn.unmatched_played(ref, games)
+    if extra.empty:
+        return games, info
+
+    # A team name this table has never seen is a naming mismatch, not a new
+    # fixture, and importing it is worse than importing nothing: Elo would
+    # open a SECOND entity for that club at the default rating, leave the real
+    # one to go stale, and price both as if nothing had happened. That is this
+    # project's recurring failure -- a value that is not what the surrounding
+    # code assumed -- and it is exactly what an upstream rename of
+    # "Nott'm Forest" would produce, the day it happened, with no other
+    # symptom. Such rows are left out, which leaves the residual gap standing,
+    # which takes the league dark loudly. A club whose very first appearance
+    # is on ESPN alone is refused by the same rule; the cost of being wrong
+    # there is one dark league, against a corrupted rating book.
+    known = set(games["home_team"]).union(games["away_team"])
+    unknown = sorted({t for t in set(extra["home_team"]).union(extra["away_team"])
+                      if t not in known})
+    if unknown:
+        info["unknown_teams"] = unknown
+        extra = extra[extra["home_team"].isin(known) & extra["away_team"].isin(known)]
+        if extra.empty:
+            return games, info
+
+    # Reindex onto the primary table's columns: every column ESPN does not
+    # carry -- which is every odds column -- becomes NaN rather than absent,
+    # so the concat cannot silently reshape the frame.
+    aligned = extra.reindex(columns=games.columns)
+    aligned["source"] = "espn"
+
+    info["rows"] = int(len(aligned))
+    info["games"] = [f"{r['away_team']} @ {r['home_team']} {str(r['game_date'])[:10]}"
+                     for _, r in aligned.iterrows()]
+    return pd.concat([games, aligned], ignore_index=True), info
+
+
 def load_games(sport: str, seasons, label_fn, fetch, *fetch_args) -> tuple[pd.DataFrame, dict]:
     """Rating-season games for `sport`, live if possible, committed if not.
 
@@ -134,6 +215,16 @@ def load_games(sport: str, seasons, label_fn, fetch, *fetch_args) -> tuple[pd.Da
         # fallback nothing independent has confirmed, rather than treating
         # "could not check" as "fine".
         prov["usable"] = bool(gap["checked"]) and gap["missing_played"] == 0
+
+        if gap["checked"] and gap["missing_played"]:
+            filtered, supp = _supplement_from_espn(sport, filtered, wanted)
+            prov["espn_supplement"] = supp
+            after = _missing_played_games(sport, filtered)
+            prov["freshness_after_supplement"] = after
+            prov["rows"] = int(len(filtered))
+            prov["played"] = int(filtered["home_score"].notna().sum())
+            prov["usable"] = bool(after["checked"]) and after["missing_played"] == 0
+
         if filtered.empty:
             prov["usable"] = False
 
@@ -148,5 +239,12 @@ def describe(prov: dict) -> str:
     state = "USABLE" if prov.get("usable") else "NOT USABLE"
     detail = (f"ESPN gap {gap.get('missing_played')} of {gap.get('espn_played')} played"
               if gap.get("checked") else f"unverified ({gap.get('reason')})")
+    # A supplemented run must never read like a run that needed no supplement:
+    # the gap it reports was closed with rows from the checker itself.
+    supp = prov.get("espn_supplement") or {}
+    if supp.get("rows"):
+        after = prov.get("freshness_after_supplement") or {}
+        detail += (f", {supp['rows']} filled from ESPN (no odds), "
+                   f"residual gap {after.get('missing_played')}")
     return (f"{prov['sport']}: upstream DOWN ({prov.get('error')}); "
             f"committed table {state}, {prov.get('rows', 0)} rows, {detail}")

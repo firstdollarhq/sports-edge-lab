@@ -407,6 +407,80 @@ def fetch_espn_games(sport: str, start: str, end: str | None = None,
 
 # --- Verification against the source we already hold ------------------------
 
+def _aligned(espn: pd.DataFrame, primary: pd.DataFrame,
+             tolerance_days: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.Timedelta]:
+    """Prepare both frames for fixture matching: anchors, and primary windowed.
+
+    Extracted so that `audit_against_primary` (which COUNTS the games ESPN has
+    and the primary table lacks) and `unmatched_played` (which RETURNS them)
+    cannot drift apart. That pairing is load-bearing: `ingest/sources.py` gates
+    a degraded run on the count and then fills the gap with the rows, so a
+    matcher that disagreed with itself by one fixture would either re-add a
+    game the table already has -- double-counting a result in the Elo path --
+    or declare a gap it had just filled.
+    """
+    e = espn.copy()
+    e["_k"] = pd.to_datetime(e["kickoff_utc"], utc=True, errors="coerce")
+    p = primary.copy()
+    p["_k"] = pd.to_datetime(p.get("kickoff_utc"), utc=True, errors="coerce")
+    p["_d"] = pd.to_datetime(p["game_date"], utc=True, errors="coerce")
+    # Prefer a real kickoff for matching, fall back to the calendar date.
+    p["_anchor"] = p["_k"].fillna(p["_d"])
+
+    tol = pd.Timedelta(days=tolerance_days)
+
+    # Restrict the primary table to ESPN's own window before counting anything
+    # as "only in primary". The committed tables hold every season ever
+    # ingested, so skipping this reports ~2,600 historical fixtures as games
+    # ESPN is missing -- a number that is both true and completely useless,
+    # and which would bury a real one-game gap.
+    lo, hi = e["_k"].min() - tol, e["_k"].max() + tol
+    p = p[(p["_anchor"] >= lo) & (p["_anchor"] <= hi)]
+    return e, p, tol
+
+
+def _primary_hit(row: pd.Series, p: pd.DataFrame, tol: pd.Timedelta):
+    """The primary-table row for this ESPN fixture, or None.
+
+    Matched on (home_team, away_team) with kickoffs within `tol` -- enough to
+    absorb a local-date vs UTC-date disagreement on a late kickoff, tight
+    enough not to collide with the reverse fixture, which no league schedules
+    inside a week.
+    """
+    cand = p[(p["home_team"] == row["home_team"])
+             & (p["away_team"] == row["away_team"])]
+    cand = cand[(cand["_anchor"] - row["_k"]).abs() <= tol]
+    return None if cand.empty else cand.iloc[0]
+
+
+def unmatched_played(espn: pd.DataFrame, primary: pd.DataFrame,
+                     *, tolerance_days: int = 2) -> pd.DataFrame:
+    """ESPN rows for games ESPN reports PLAYED that `primary` does not have.
+
+    The row-level counterpart of `audit_against_primary`'s `only_espn`, using
+    the same matcher (see `_aligned`). Restricted to played games because the
+    caller is filling a results gap: an unplayed fixture ESPN has listed early
+    is not a gap in anything, and adding it to a ratings table would feed a
+    game with no score to a model that reads one.
+
+    Returns ESPN's own columns, with the helper columns dropped, so the result
+    is concatenable with the table it is supplementing.
+    """
+    if espn.empty:
+        return espn.iloc[0:0]
+    played = espn.dropna(subset=["home_score", "away_score"])
+    if played.empty:
+        return played
+    if primary.empty:
+        return played
+
+    e, p, tol = _aligned(played, primary, tolerance_days)
+    if p.empty:
+        return played
+    keep = [i for i, row in e.iterrows() if _primary_hit(row, p, tol) is None]
+    return played.loc[keep]
+
+
 def audit_against_primary(espn: pd.DataFrame, primary: pd.DataFrame,
                           *, tolerance_days: int = 2) -> dict:
     """Compare ESPN's scores and kickoffs to the primary stats table.
@@ -435,23 +509,7 @@ def audit_against_primary(espn: pd.DataFrame, primary: pd.DataFrame,
         out["only_primary"] = int(len(primary))
         return out
 
-    e = espn.copy()
-    e["_k"] = pd.to_datetime(e["kickoff_utc"], utc=True, errors="coerce")
-    p = primary.copy()
-    p["_k"] = pd.to_datetime(p.get("kickoff_utc"), utc=True, errors="coerce")
-    p["_d"] = pd.to_datetime(p["game_date"], utc=True, errors="coerce")
-    # Prefer a real kickoff for matching, fall back to the calendar date.
-    p["_anchor"] = p["_k"].fillna(p["_d"])
-
-    tol = pd.Timedelta(days=tolerance_days)
-
-    # Restrict the primary table to ESPN's own window before counting anything
-    # as "only in primary". The committed tables hold every season ever
-    # ingested, so skipping this reports ~2,600 historical fixtures as games
-    # ESPN is missing -- a number that is both true and completely useless,
-    # and which would bury a real one-game gap.
-    lo, hi = e["_k"].min() - tol, e["_k"].max() + tol
-    p = p[(p["_anchor"] >= lo) & (p["_anchor"] <= hi)]
+    e, p, tol = _aligned(espn, primary, tolerance_days)
     if p.empty:
         out["only_espn"] = int(len(e))
         return out
@@ -459,13 +517,10 @@ def audit_against_primary(espn: pd.DataFrame, primary: pd.DataFrame,
     matched_primary = set()
 
     for _, row in e.iterrows():
-        cand = p[(p["home_team"] == row["home_team"])
-                 & (p["away_team"] == row["away_team"])]
-        cand = cand[(cand["_anchor"] - row["_k"]).abs() <= tol]
-        if cand.empty:
+        hit = _primary_hit(row, p, tol)
+        if hit is None:
             out["only_espn"] += 1
             continue
-        hit = cand.iloc[0]
         matched_primary.add(hit.name)
 
         e_played = pd.notna(row["home_score"]) and pd.notna(row["away_score"])
