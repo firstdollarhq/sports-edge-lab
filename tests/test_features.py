@@ -203,6 +203,37 @@ def test_committed_nfl_table_carries_the_context_columns():
     assert df["neutral_site"].sum() > 0
 
 
+def test_weather_columns_do_not_exist_before_kickoff():
+    """The weather tier cannot be priced with, and this is why.
+
+    Run 12's docstring called the tier "mildly optimistic", as though a live
+    model would hold a forecast in place of the observation. Run 18 measured
+    it on the committed table: nflverse populates `temp` and `wind` only after
+    a game is played, so at pricing time the column is not worse, it is empty.
+    Run 12 rejected the tier on AUC regardless, so nothing downstream rests on
+    this -- it is pinned so a future run proposing to revisit weather learns
+    the feature is absent before it spends a session fitting it.
+
+    `roof` and `surface` are asserted alongside precisely because they are the
+    counter-example: schedule-known, available in advance, and legitimately
+    usable.
+    """
+    df = snapshots.read_processed("nfl_games")
+    played = df["home_score"].notna()
+    unplayed = df[~played]
+    if unplayed.empty:  # pragma: no cover - only out of season
+        pytest.skip("no unplayed games in the committed table")
+
+    assert unplayed["temp"].notna().sum() == 0
+    assert unplayed["wind"].notna().sum() == 0
+    # Populated for a good share of played games, so the zero above is about
+    # timing rather than the columns being empty everywhere.
+    assert df[played]["temp"].notna().mean() > 0.3
+    # The tier that IS knowable in advance.
+    assert unplayed["surface"].notna().mean() > 0.9
+    assert unplayed["roof"].notna().mean() > 0.5
+
+
 def test_auc_helper_agrees_with_a_hand_computed_case():
     y = [0, 0, 1, 1]
     assert auc(y, [0.1, 0.2, 0.3, 0.4]) == pytest.approx(1.0)
