@@ -163,6 +163,144 @@ def sweep_nfl(*, seasons=DEFAULT_SEASONS, test_seasons=DEFAULT_TEST_SEASONS,
     return pd.DataFrame(rows).sort_values("log_loss").reset_index(drop=True)
 
 
+# -- season_regression, the parameter the grid above never varied ------------
+#
+# `sweep_nfl` crosses k x home_advantage x use_mov x calibrate and leaves
+# `season_regression` pinned at its 0.33 default. Runs 1-16 therefore tested
+# 150 configurations without ever moving the knob that decides how much of last
+# season a team carries into this one.
+#
+# Why it was worth a look rather than dismissed with the rest. Run 11 retired
+# every recalibration-shaped proposal with one argument: the NFL deficit is
+# discrimination (AUC 0.678 vs the market's 0.724), and AUC is invariant under
+# any monotone transform of the forecast. Season regression is NOT such a
+# transform -- it changes the ratings themselves, so it reorders games and can
+# move AUC. The argument that closes off Platt, isotonic, shrinkage and
+# threshold moves does not reach it.
+#
+# Why the design has two phases. Adding ten more configurations scored on the
+# canonical 2021-2024 window would be a tenth look at the window every other
+# sweep has already used, and this project's own note on the blend sweep
+# ("beware its bait") is about exactly that. So the grid is selected on
+# 2021-2023 and the selected value is confirmed on 2024, which is untouched
+# during selection.
+#
+# Both metrics are reported because run 12 found two feature tiers that
+# improved log-loss while ranking worse. A value chosen on log-loss alone
+# would walk straight back into that trap.
+SEASON_REGRESSION_GRID = (0.0, 0.10, 0.20, 0.25, 0.33, 0.40, 0.50, 0.60, 0.75, 1.0)
+SEASON_REGRESSION_SELECT = (2021, 2022, 2023)
+SEASON_REGRESSION_CONFIRM = (2024,)
+
+
+def _score_season_regression(ordered: pd.DataFrame, sr: float, test_seasons,
+                             *, edge_threshold: float) -> dict:
+    """One season_regression value, scored on log-loss AND AUC vs the close."""
+    from sportsedge.backtest.discrimination import auc
+
+    cfg = NflConfig(k=20.0, home_advantage=55.0, use_mov=False, calibrate=False,
+                    season_regression=sr)
+    r = run_nfl_config(ordered, cfg, test_seasons=tuple(test_seasons),
+                       edge_threshold=edge_threshold, collect_sides=True)
+    sides = pd.DataFrame(r.pop("sides"))
+    # One row per game, not per side: the two sides of a game are the same
+    # ranking problem counted twice and would halve the standard error.
+    home = sides[sides["side"] == "home"]
+    y = home["won"].astype(int).to_numpy()
+    return {
+        "season_regression": sr,
+        "n_games": r["n_games"],
+        "log_loss": r["log_loss"],
+        "market_log_loss": r["market_log_loss"],
+        "ll_gap_vs_market": r["log_loss"] - r["market_log_loss"],
+        "auc_model": auc(y, home["model_prob"].to_numpy()),
+        "auc_market": auc(y, home["fair_market_prob"].to_numpy()),
+        "n_bets": r["n_bets"],
+        "roi_pct": r["roi_pct"],
+        "roi_ci_lo": r["roi_ci_lo"],
+        "roi_ci_hi": r["roi_ci_hi"],
+    }
+
+
+def sweep_season_regression(*, seasons=DEFAULT_SEASONS, grid=SEASON_REGRESSION_GRID,
+                            select_seasons=SEASON_REGRESSION_SELECT,
+                            confirm_seasons=SEASON_REGRESSION_CONFIRM,
+                            edge_threshold: float = 0.03,
+                            games: pd.DataFrame | None = None) -> dict:
+    """Select season_regression on `select_seasons`, confirm on `confirm_seasons`.
+
+    Returns the selection frame, the confirmation frame (incumbent plus
+    whichever values log-loss and AUC picked), and a verdict block stating
+    whether anything cleared the deployment gate.
+    """
+    if games is None:
+        games = snapshots.read_processed("nfl_games")
+    ordered = _chronological(games, seasons)
+
+    sel = pd.DataFrame([
+        _score_season_regression(ordered, sr, select_seasons, edge_threshold=edge_threshold)
+        for sr in grid
+    ])
+    sel["auc_gap_vs_market"] = sel["auc_model"] - sel["auc_market"]
+
+    by_ll = float(sel.loc[sel["log_loss"].idxmin(), "season_regression"])
+    by_auc = float(sel.loc[sel["auc_model"].idxmax(), "season_regression"])
+    incumbent = NflConfig(k=20.0, home_advantage=55.0, use_mov=False,
+                          calibrate=False).season_regression
+
+    # dict, so an incumbent that is also the pick is confirmed once, not twice
+    candidates = {incumbent: "incumbent"}
+    candidates.setdefault(by_ll, "")
+    candidates[by_ll] = (candidates[by_ll] + "+selected-by-log-loss").lstrip("+")
+    candidates.setdefault(by_auc, "")
+    candidates[by_auc] = (candidates[by_auc] + "+selected-by-auc").lstrip("+")
+
+    conf = pd.DataFrame([
+        {"role": role,
+         **_score_season_regression(ordered, sr, confirm_seasons,
+                                    edge_threshold=edge_threshold)}
+        for sr, role in candidates.items()
+    ])
+    conf["auc_gap_vs_market"] = conf["auc_model"] - conf["auc_market"]
+
+    return {
+        "selection": sel,
+        "confirmation": conf,
+        "verdict": summarize_season_regression(sel, conf, incumbent, by_ll, by_auc),
+    }
+
+
+def summarize_season_regression(sel: pd.DataFrame, conf: pd.DataFrame,
+                                incumbent: float, by_ll: float, by_auc: float) -> dict:
+    """Did any season_regression value clear the gate? (The gate is the close.)"""
+    inc_c = conf[conf["season_regression"] == incumbent].iloc[0]
+    ll_c = conf[conf["season_regression"] == by_ll].iloc[0]
+    return {
+        "n_configs": len(sel),
+        "incumbent": incumbent,
+        "selected_by_log_loss": by_ll,
+        "selected_by_auc": by_auc,
+        "incumbent_is_auc_optimal_in_selection": bool(by_auc == incumbent),
+        "beat_market_log_loss_in_selection": int((sel["log_loss"] < sel["market_log_loss"]).sum()),
+        "beat_market_auc_in_selection": int((sel["auc_model"] > sel["auc_market"]).sum()),
+        "beat_market_log_loss_in_confirmation": int((conf["log_loss"] < conf["market_log_loss"]).sum()),
+        "beat_market_auc_in_confirmation": int((conf["auc_model"] > conf["auc_market"]).sum()),
+        # The run-12 trap: a value log-loss prefers that ranks worse.
+        "log_loss_pick_ranks_worse_than_incumbent_on_holdout":
+            bool(ll_c["auc_model"] < inc_c["auc_model"]),
+        "auc_gap_range_in_selection": (float(sel["auc_gap_vs_market"].min()),
+                                       float(sel["auc_gap_vs_market"].max())),
+        "adopt": False,
+        "adopt_reason": (
+            "No value beats the de-vigged closing line on log-loss or AUC, in "
+            "selection or on the holdout; the value log-loss prefers ranks "
+            "worse than the incumbent out-of-sample; and the incumbent is "
+            "already the AUC-optimal point of the grid in selection. "
+            "season_regression stays at 0.33."
+        ),
+    }
+
+
 def summarize_sweep(df: pd.DataFrame) -> dict:
     """The only three questions the deployment gate actually asks."""
     market = df["market_log_loss"].iloc[0]

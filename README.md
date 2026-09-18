@@ -5,23 +5,49 @@ A research project testing predictive sports models against real market odds.
 to find a real, validated edge, not to confirm a bias. See `journal/` for an
 honest, dated log of what was tried and what happened.
 
-## Status (2026-09-17, scheduled run #16)
+## Status (2026-09-18, scheduled run #17)
 
-- **0 live bets. 25 settled shadow bets (6 wins), 32 pending, 67 void.**
-  Headline win rate **24.0%**, ROI **-20.87%**. Still 25 settled wagers; it
-  settles nothing on its own. **Nothing has settled in five runs** — NFL week 2
-  opens **09-18T00:15Z**, hours after run 16 ended.
-- **football-data.co.uk — the only EPL results and closing-odds source this
-  project has — is DOWN**, ~33h as of run 16. Every path on the host, `www` and
-  apex alike, redirects to `http://127.0.0.1/`. An upstream misconfiguration;
-  no key would fix it. `refresh-history` used to raise inside its EPL step and
-  never reach the ESPN refresh or the SQLite rebuild behind it, and `recommend
-  --sports soccer` raised before pricing anything. Both now degrade instead:
-  the committed table is used, and **the fallback is gated on an independent
-  source rather than a clock** — usable iff ESPN reports no played game the
-  table is missing (gap **0 of 40** on both runs). An age check would have
-  passed here *and* would pass the case that matters, because the EPL table was
-  15h old and complete.
+- **0 live bets. 26 settled shadow bets (6 wins), 35 pending, 67 void.**
+  Headline win rate **23.08%**, ROI **-23.91%**. **The five-run settlement
+  drought ended**: `DET @ BUF` resolved BUF 41-31 and the model's Detroit bet
+  lost. It is 26 settled wagers and settles nothing on its own.
+- **The one settled row is the sharpest single observation in the book.** Model
+  0.380 on Detroit against a de-vigged market 0.355, bought at 0.36, **closed
+  at 0.31** — a monotone five-tick walk away from the model's side over four
+  days with zero reversal, priced against a reference **12.4 minutes** before
+  kickoff. CLV **-13.89% = -3.94 ticks**, the book's largest negative (next is
+  -12.50%). Verified 34/34 by `verify-settlements` and by both stats sources
+  independently.
+- **`season_regression` swept for the first time, and rejected** — the one
+  `NflConfig` field `sweep_nfl` never varied, so runs 1-16's "150
+  configurations" all ran it at 0.33. Worth testing because run 11's
+  AUC-invariance argument (which retires every recalibration-shaped change)
+  does **not** reach it: season regression changes the ratings, so it reorders
+  games. Ten values selected on 2021-2023, confirmed on a held-out 2024:
+  **0 of 10 beat the de-vigged closing line on log-loss or AUC in either
+  phase**; the value log-loss prefers (0.25) **ranks worse** than the incumbent
+  out-of-sample, 0.73315 vs 0.73797 — run 12's trap again; and **0.33 is
+  already the AUC optimum of the grid**. The AUC gap to market is flat at
+  -0.052 to -0.065 across everything from 0.0 to 0.75, so this parameter is not
+  a lever on what is actually wrong. **Nothing adopted.** `cli
+  sweep-season-regression`. Configurations tested: **160**.
+- **`scorecard`'s `p_at_most_model` is not the pre-registered prediction, and
+  the two have now visibly diverged.** It reads **0.0385** against run 11's
+  0.0509, but run 4's pre-registered cohort is **36 specific wagers** of which
+  **exactly 25 have settled — unchanged** — and its P(X ≤ 6) is **still
+  0.0509**. The scorecard's p-value fell because a 26th, non-pre-registered row
+  arrived. The cohort completes **09-21** (11 open NFL wagers carrying 4.87
+  claimed / 3.96 market-implied); it is deliberately **not** being scored
+  before then, because it has already been looked at three times with no
+  correction for looking.
+- **football-data.co.uk is BACK** after 34-48h down (the recovery falls in an
+  unobserved 14h gap). The `www`→apex redirect remains; the
+  apex→`http://127.0.0.1/` loop is gone. **The committed table it was replaced
+  with came back byte-identical to what the live source now returns** — which
+  retroactively audits runs 15-16: their claim that the cached table was
+  missing no played game rested on ESPN, and the primary source has now
+  confirmed it directly. Run 16's ESPN supplement **never fired** and is still
+  untested against a real gap — deferred, not validated.
 - **The EPL rating path no longer depends on that host (run 16).** When the
   committed table falls behind, `ingest/sources` now fills the gap with ESPN's
   played games, in memory, at load time. `build_soccer_model` reads season,
@@ -43,15 +69,17 @@ honest, dated log of what was tried and what happened.
     do silently; and the supplement never reaches a backtest, since
     `cli._load_games` reads the committed table directly and odds-free rows are
     holes, not games.
-  - **It is dormant until 09-19.** No EPL fixture falls between 09-14 and
-    09-19, so run 16 exercised none of it and priced exactly as run 15 did.
-- **The outage is not destroying an irreplaceable record.** The
-  bookmaker-average closing line is lost for fixtures played during it, but the
-  9 EPL events at/after 09-19 already hold **5,049 captured Kalshi quotes** in
-  `data/snapshots/`, and run 5 measured the two venues pricing the same games
-  the same way (corr 0.9955). Reconstructing an EPL closing line from the
-  snapshot store is real work, is possible from committed data at any later
-  date, and is therefore not urgent.
+  - **It never fired.** No EPL fixture fell between 09-14 and 09-19, so runs 16
+    and 17 both exercised none of it, and the source recovered on 09-18 before
+    the 09-19 fixtures it was built for. **Deferred, not validated** — the next
+    outage will still be its first real run.
+- **The outage destroyed no irreplaceable record**, and in the end no
+  bookmaker-average closing line was lost at all: no EPL fixture was played
+  inside it, and `epl_games.csv` came back from the recovered source
+  byte-identical. Had any been played, the Kalshi quotes would still have been
+  captured — run 5 measured the two venues pricing the same games the same way
+  (corr 0.9955) — so reconstructing an EPL closing line from `data/snapshots/`
+  remains possible from committed data at any later date.
 - **The model's spectacular early-board edges are a book that has not opened
   yet — and the ones that survive that never decay at all.** Run 14 left "the
   gate rejects early boards, the model's biggest edges appear on early boards,
@@ -88,15 +116,23 @@ honest, dated log of what was tried and what happened.
   pinned by a test that asserts the **committed file** is byte-identical after
   a load/save cycle — a synthetic fixture would have passed while the real file
   failed, because which cells drift depends on the decimals the file holds.
-- **The liquidity gate is validated on NFL and does nothing measurable on
-  EPL.** It had gated every price this project ever recommended without once
-  being checked. Measured as quote persistence over 5,122 NFL and 3,540 EPL
-  consecutive-capture pairs: a gate-rejected NFL quote raises its ask by at
-  least a tick before the next capture **16.9%** of the time against **6.2%**
-  for an accepted one, a gap of **+10.7pp**, CI **[+6.4, +16.4]** resampling
-  *contracts* rather than quotes. The 5% relative-width rule **in isolation**
-  — the one run 13 named as unvalidated — is **+18.1pp, CI [+7.6, +32.3]**.
-  On EPL the same test reads **+1.6pp, CI [-0.4, +5.6]**: nothing.
+- **The liquidity gate is validated on NFL, and on EPL its interval has now
+  moved off zero.** It had gated every price this project ever recommended
+  without once being checked. Measured as quote persistence: a gate-rejected
+  NFL quote raises its ask by at least a tick before the next capture
+  **13.92%** of the time against **5.25%** for an accepted one — **+8.67pp, CI
+  [+5.6, +13.0]** on 9,264 pairs, resampling *contracts* rather than quotes
+  (run 14: +10.7pp, CI [+6.4, +16.4] on 5,122). The 5% relative-width rule
+  **in isolation** — the one run 13 named as unvalidated — was **+18.1pp, CI
+  [+7.6, +32.3]**.
+  - **EPL moved from nothing to a weak positive**: **+1.6pp, CI [-0.4, +5.6]**
+    on 3,540 pairs at run 14, **+2.57pp, CI [+0.72, +6.92]** on 5,490 at run
+    17 (5.98% against 3.41%). Read with its caveats: this is the **second look
+    at the same question on a growing sample** — the same optional-stopping
+    mechanism the pre-registered cohort above declines to exploit — and a lower
+    bound of +0.72pp is a weak positive a third look could take back. The gate
+    is **evidenced** on both leagues, not validated on both. **Nothing was
+    changed on the strength of it**, in either direction.
   `cli fill-quality`. **This is quote persistence, not fill quality** — no
   order has ever been placed, and none can be while `live_enabled` is false.
 - **The gate has never rejected a quote near kickoff.** 0 of 1,084 NFL
@@ -120,16 +156,23 @@ honest, dated log of what was tried and what happened.
   and not the other), and both committed ESPN tables came out **byte-identical**
   to the range-fetched version. The cross-check source degraded loudly and
   nothing already correct became wrong — which is what it was designed to do.
-- **The CLV mean is 0.38 of a tick, and that is how it should be read.** One
-  1c Kalshi tick is worth ~3.02% `clv_pct` at the prices this ledger pays, so
-  the -1.14% real-close figure is a third of the smallest change the venue can
-  express; the **median is exactly 0.000%** and **half the settled rows closed
-  at the price they were struck at**. `ledger-summary` now prints a
-  `clv_resolution` block beside the mean. **This does not mean CLV is
-  unmeasurable here** — run 13's first draft said so and the arithmetic refused
-  it: SE is already **1.03%**, inside half a tick, and ~30 real-close rows
-  would resolve a quarter tick. The instrument works and reads **no detectable
-  edge**, CI [-3.25, +0.64].
+- **The CLV mean is 0.54 of a tick, and that is how it should be read.** One
+  1c Kalshi tick is worth **3.5253%** `clv_pct` at the prices this ledger pays
+  (mean price paid 0.3462), so the **-1.888%** real-close figure (n=17) is
+  half the smallest change the venue can express; the **median is exactly
+  0.000%** and **46.2% of settled rows closed at the price they were struck
+  at**. `ledger-summary` prints a `clv_resolution` block beside the mean.
+  **This does not mean CLV is unmeasurable here** — run 13's first draft said
+  so and the arithmetic refused it: SE is **1.222%**, about a third of a tick, and
+  ~30 real-close rows would resolve a quarter tick. The instrument works and
+  reads **no detectable edge**.
+  - **And it has now been asked, for the first time, whether CLV predicts
+    anything here. It does not — at this n.** Splitting the 17 real-close rows
+    by CLV sign: CLV<0 wins 2 of 6 (ROI -22.87%), CLV=0 wins 1 of 8 (-34.21%),
+    CLV>0 wins 1 of 3 (**-38.27%**). **No ordering at all**, with the worst ROI
+    on the *positive*-CLV cohort. At n = 6/8/3 that is noise and must be read
+    as noise — it is **not** evidence that CLV is inverted. It is the first
+    direct look at whether this project's leading indicator leads anything.
 - **The whole pre-kickoff window is quiet, not just the final hour.** Run 9
   showed the last hour barely moves; run 13 replicated that on a second slate
   (28 NFL contracts) and measured the rest: over a median 74h window with 29
@@ -178,15 +221,23 @@ honest, dated log of what was tried and what happened.
   on — still only reaches log-loss **0.635** against the market's **0.610**.
   This is the answer to run 10's closing question, and it retires a whole
   family of proposals. `cli discrimination-report`.
-- **Run 4's pre-registered prediction has resolved on 23 of 36 wagers, and the
-  model's own claim is the hypothesis it falsifies.** NFL week 1 settled
-  overnight. Actual **6** wins against **9.45** claimed, **7.22**
-  selection-corrected and **7.77** market-implied. The NFL leg is the sharp
-  one -- corrected **4.09**, market 4.82, claimed 5.87, **actual 4**. Exact
-  Poisson-binomial P(X <= 6) is **0.095** under the model's claim, 0.377
-  corrected, 0.287 market. **None of those is a rejection at any conventional
-  level**; what the result says is that the observation sits in the tail of
-  the model's own claim and comfortably inside the other two. `cli scorecard`.
+- **Run 4's pre-registered prediction has resolved on 25 of 36 wagers, and the
+  model's own claim is the hypothesis it falsifies.** Actual **6** wins against
+  **10.32** claimed and **8.53** market-implied; at 23 wagers it was 6 against
+  9.45 claimed, 7.22 selection-corrected, 7.77 market-implied, with the NFL leg
+  the sharp one (corrected **4.09**, market 4.82, claimed 5.87, **actual 4**).
+  Exact Poisson-binomial P(X ≤ 6) is **0.0509** under the model's claim, 0.1896
+  market. **That is not a rejection**, and specifically not one that "just
+  crossed" a threshold: this is the **third scoring of the same growing sample
+  against the same hypothesis with no correction for having looked**, which is
+  optional stopping — the mechanism that manufactures a p-value near 0.05 out
+  of nothing. **The honest read is the one taken at 36, on 09-21.**
+  - **Do not substitute `scorecard`'s `p_at_most_model` for this number.** It
+    scores *every* settled row, not the cohort. At run 17 it reads **0.0385**
+    while the pre-registered 25-of-36 reading is **still 0.0509** — the gap is
+    one non-pre-registered row, not a trend. `cli scorecard` for the former;
+    reconstruct the cohort from `placed_at` (1 row 09-10 + 35 rows 09-11) for
+    the latter.
 - **The market beats the model on every scoring rule, on the bets the model
   itself chose.** Model log-loss **0.6535** vs market **0.6030**; Brier 0.2318
   vs 0.2057; model overstatement **+15.0pp** vs the market's +7.7pp.
@@ -252,13 +303,17 @@ honest, dated log of what was tried and what happened.
   Kalshi's API will not expose.
 - **The EPL expiration lag is measured, not assumed: exactly 3.00h on 13/13
   contracts.** NFL is 3.00h x 27 and 6.00h x 3 in the same window.
-- **Settlements are independently cross-checked and all agree.** 30/30 NFL and
-  117/117 soccer, against ESPN's public scoreboard as a third opinion rather
+- **Settlements are independently cross-checked and all agree.** 34/34 NFL and
+  120/120 soccer, against ESPN's public scoreboard as a third opinion rather
   than Kalshi's own resolution alone. `espn-audit` is read every run, not
-  assumed: NFL 15/15 scores and kickoffs, EPL 30/30.
-- **150 model configurations backtested, plus 15 context-feature fits in run
+  assumed: NFL 17/17 scores and kickoffs, EPL 40/40. Its `only_espn: 6` on
+  soccer is six `STATUS_SCHEDULED` fixtures with no scores — upcoming games,
+  not a results gap; checked rather than assumed, because "the cross-check
+  found six games the primary lacks" is the shape of a real problem.
+- **160 model configurations backtested, plus 15 context-feature fits in run
   12. None beat the market.** Nothing adopted, `live_enabled` is `false`
-  everywhere.
+  everywhere. The last ten were run 17's `season_regression` grid — the one
+  parameter the main sweep never varied, now closed.
 - **EPL's +8.27% ROI is retired.** Re-run with each season as holdout it is
   1 of 6 positive; pooled **-8.30%**, sd 9.33pp.
 - **Twelve bugs of one shape so far**, all a value that was not what the
@@ -268,16 +323,27 @@ honest, dated log of what was tried and what happened.
   pooled-control discrepancy it found was caught by a control written to catch
   it, before any number rested on it, which is the system working rather than
   a thirteenth failure of it.
-- **Next pre-registration, written before the games:** the 13 still-open
-  pre-registered wagers (12 NFL, 1 EPL) settling through 2026-09-21 --
-  claimed **5.74**, selection-corrected **4.05**, market-implied **4.72**.
+- **Next pre-registration, written before the games:** the 13 wagers (12 NFL,
+  1 EPL) settling through 2026-09-21 -- claimed **5.74**, selection-corrected
+  **4.05**, market-implied **4.72**. **2 have settled, 0 wins**; the 11 still
+  open are all NFL, kicking off 09-20T17:00Z to 09-21T00:20Z, carrying **4.87
+  claimed** and **3.96 market-implied**. Both this and the 36-wager cohort
+  reproduce from `placed_at` digit-for-digit and are to be scored **once, on
+  09-21**.
+- **The claimed-edge overstatement is the most consistently replicating result
+  in the project.** Splitting the 26 settled rows at the median claimed edge
+  (17.1%): the low-edge half won 4 of 13 against 5.33 claimed (**-1.33**, ROI
+  **-7.54%**), the high-edge half 2 of 13 against 5.37 claimed (**-3.37**, ROI
+  **-40.28%**). Run 9 measured -0.55 / -2.89 at n = 12/11. Same direction,
+  larger gap, and it is run 4's selection-audit signature seen in realized
+  results rather than backtest. **It is still 13 and 13.**
 
 ## Why these data sources
 
 | Need | Source | Cost | Notes |
 |---|---|---|---|
 | NFL schedules, scores, closing lines (historical) | [nflverse](https://github.com/nflverse/nfl_data_py) | Free, no key | Ships actual closing moneyline/spread/total per game. Also ships the pre-kickoff context run 12 tested and rejected (rest, divisional, neutral site, roof, surface, temp, wind, starting QB) — carried since run 12, **never read by Elo** |
-| Soccer results + closing odds (historical) | [football-data.co.uk](https://www.football-data.co.uk/) | Free, no key | CSV per league/season; uses bookmaker-average (`Avg*`) columns when available. **DOWN since 2026-09-17** — every path redirects to `http://127.0.0.1/`. The committed table is used instead, and only while ESPN confirms it is missing no played game (`ingest/sources.py`). |
+| Soccer results + closing odds (historical) | [football-data.co.uk](https://www.football-data.co.uk/) | Free, no key | CSV per league/season; uses bookmaker-average (`Avg*`) columns when available. **Recovered 2026-09-18** after 34-48h of every path redirecting to `http://127.0.0.1/`; the table it was replaced with came back byte-identical. While down, the committed table is used, and only while ESPN confirms it is missing no played game (`ingest/sources.py`). |
 | **Live market odds (both sports, ongoing)** | **[Kalshi](https://kalshi.com)** public REST API | **Free, no key** | CFTC-regulated exchange; read-only market data needs no auth. Each contract's dollar price *is* the market-implied probability. `KXNFLGAME` / `KXEPLGAME` series. |
 | **Settlement cross-check + kickoff times (both sports)** | **[ESPN public scoreboard](https://site.api.espn.com/apis/site/v2/sports/)** | **Free, no key** | Undocumented endpoint behind espn.com's scoreboard. Schedules and results only — **no odds, never feeds the model**. Publishes within minutes of full time, where football-data.co.uk publishes in batches days later. Verified against the primary source: 30/30 scores and 30/30 kickoffs agree (`cli espn-audit`). |
 
@@ -413,7 +479,16 @@ python -m sportsedge.cli backtest-nfl       # canonical window, 2018-2024
 python -m sportsedge.cli backtest-soccer    # canonical window, 1920-2425
 python -m sportsedge.cli selection-audit    # is the model wrong, or the bet rule?
 python -m sportsedge.cli discrimination-report   # is it calibration, or ranking?
+python -m sportsedge.cli sweep-season-regression # the knob the main grid never turned
 ```
+
+**A sweep that adds configurations to the canonical window is another look at
+that window.** `sweep-season-regression` (run 17) is therefore two-phase:
+values are selected on 2021-2023 and the selected value is confirmed on 2024,
+which is untouched during selection. It also reports **AUC beside log-loss**,
+because run 12 found two feature tiers that improved log-loss while ranking
+worse — and run 17's log-loss pick did exactly that again on the holdout.
+Any future parameter sweep should copy this shape rather than `sweep-nfl`'s.
 
 Both backtests now **default** to the canonical window rather than requiring
 `--seasons`. The windows used to live only in journal prose, and the example in
@@ -433,7 +508,7 @@ line it is betting into.
 
 ```bash
 pip install -e ".[dev]"
-pytest                                  # 209 tests, no network needed
+pytest                                  # 301 tests, no network needed
 cp .env.example .env                    # only needed for optional sources
 python -m sportsedge.cli kalshi-nfl     # live NFL market snapshot, no key needed
 python -m sportsedge.cli kalshi-epl     # live EPL market snapshot, no key needed
@@ -673,41 +748,48 @@ corrupts the record.
 ## Open questions / next steps
 
 - **The honest null is now the leading hypothesis, and it is stated as one.**
-  Fifteen runs, 150+ configurations, a hard AUC bound retiring every
+  Sixteen runs, 160 configurations, a hard AUC bound retiring every
   recalibration-shaped change (run 11), a negative result on the obvious
-  non-Elo information (run 12), and run 15's finding that the market does not
-  move toward this model over the entire tradeable window at either league.
-  Nothing found so far suggests a public-data team-strength model beats this
-  closing line. That is a finding, not a failure — but adding further features
-  without a reason to expect a different outcome would be.
-- **Runs 15 and 16 were each asked for a model idea with a stated reason to
-  expect a different outcome, and neither has one. Said plainly rather than
-  papered over.** **Four consecutive runs have produced apparatus findings
-  only.** That is the right call when the apparatus is wrong — run 16's source
-  failover is why a dead upstream did not stop the project — and it is also
-  what a project with no model ideas left looks like. Both remain true.
+  non-Elo information (run 12), run 15's finding that the market does not
+  move toward this model over the entire tradeable window at either league,
+  and run 17's finding that the never-swept rating parameter does not move the
+  AUC gap either. Nothing found so far suggests a public-data team-strength
+  model beats this closing line. That is a finding, not a failure — but adding
+  further features without a reason to expect a different outcome would be.
+- **Run 17 swept a real parameter and rejected it on evidence, which ends four
+  runs of apparatus-only work — but it did not find a new direction.** The
+  reasons against the remaining Elo-shaped ideas are now four deep: the AUC
+  deficit is -0.046, CI [-0.064, -0.030] (run 11); context features rank worse
+  (run 12); the whole pre-kickoff window is quiet (run 13); and season
+  regression does not move the gap (run 17). **The honest next step is the
+  09-21 cohort, not another parameter.**
 - **The measurable question nobody has asked yet:** the flagged cohort's mean
-  claimed edge is ~34% and its realized ROI is -20.87%. The gap between
+  claimed edge is ~27% and its realized ROI is -23.91%. The gap between
   *claimed* edge and *realized* return is this project's actual subject and has
-  never been regressed as such. Doable with what is already committed, once the
-  settled book is larger than 25.
-- ~~**football-data.co.uk is down; the deadline is 09-19.**~~ — **met in run
-  16**, ahead of the deadline: EPL results from ESPN now fill the gap in the
-  rating path, verified to reproduce the real rating book exactly (see Status).
-  Odds columns stay missing for new fixtures, which the live model does not
-  read. **09-19 is still the first live exercise of it** — expect the table to
-  fall behind by a matchday and the fill to close it; a non-zero residual gap
-  takes EPL dark and `espn_supplement.unknown_teams` is the first thing to
-  read. The source itself is still down and **still not an escalation**.
-- **A non-GitHub mirror of the football-data CSVs has not been looked for.**
-  Run 16 could not check the GitHub-hosted ones — that session's GitHub access
-  was scoped to this repository alone — so this is a fact about that runner,
-  not about what mirrors exist. A run with wider access should re-check before
-  concluding anything.
-- **Reconstructing an EPL closing line from `data/snapshots/`** is the standing
-  way to keep the EPL backtest sample growing while the source is dead. Not
-  urgent: the quotes are already captured and committed, so it can be done from
-  committed data at any later date (see Status).
+  never been regressed as such — only split at the median (see Status, where
+  the high-edge half overstates by 3.37 wins against the low half's 1.33).
+  A real regression is doable with what is already committed, once the settled
+  book is larger than 26. **09-21 adds 11 rows at once.**
+- **CLV is at 17 real-close rows and needs ~13 more to resolve a quarter
+  tick.** The 11 open pre-registered wagers all settle 09-20/09-21 with full
+  final-hour capture coverage, so the run after 09-21 should be the first able
+  to put a real interval on CLV — and the first able to ask whether CLV
+  predicts outcomes on more than 6/8/3 rows (see Status).
+- ~~**football-data.co.uk is down; the deadline is 09-19.**~~ — **the source
+  recovered on 09-18**, and run 16's ESPN failover was built in time either
+  way. **The failover is therefore still untested against a real gap**: no EPL
+  fixture fell inside the outage, so the supplement never fired, and the 09-19
+  exercise that would have tested it is gone. Treat it as **deferred, not
+  validated** — if the source dies again, expect the first real run of
+  `_supplement_from_espn` to be exactly that, a first run.
+- ~~**A non-GitHub mirror of the football-data CSVs has not been looked for.**~~
+  — **moot for now**; the source is back. The constraint run 16 recorded (that
+  session's GitHub access was scoped to this repository alone) still holds and
+  is still a fact about the runner, not about what mirrors exist.
+- **Reconstructing an EPL closing line from `data/snapshots/`** is no longer
+  needed to survive an outage, but it remains the only way to grow the EPL
+  backtest sample with fixtures the bookmaker column never covered. Not urgent;
+  doable from committed data at any later date.
 - **The opening-book measurement is NFL-only, on 32 contracts.** No EPL
   contract listed during the capture window. Do not quote it as a fact about
   the venue until an EPL listing has been watched.
@@ -719,7 +801,7 @@ corrupts the record.
 - **The selection gap is the thing to attack, not the ratings.** A model need
   not beat the market on every game to be bettable -- it needs to be right
   about *which* games it disagrees on. Nothing measured so far suggests Elo
-  is. Elo parameter tuning is exhausted (150 configs, none beat the market)
+  is. Elo parameter tuning is exhausted (160 configs, none beat the market)
   and retuning cannot reach a selection bias in any case.
 - **Do not "fix" the selection gap with a price or edge filter without a real
   test.** Every price bucket in the NFL backtest is ROI-negative (best
