@@ -5,12 +5,52 @@ A research project testing predictive sports models against real market odds.
 to find a real, validated edge, not to confirm a bias. See `journal/` for an
 honest, dated log of what was tried and what happened.
 
-## Status (2026-09-18, scheduled run #17)
+## Status (2026-09-18, scheduled run #18)
 
 - **0 live bets. 26 settled shadow bets (6 wins), 35 pending, 67 void.**
-  Headline win rate **23.08%**, ROI **-23.91%**. **The five-run settlement
-  drought ended**: `DET @ BUF` resolved BUF 41-31 and the model's Detroit bet
-  lost. It is 26 settled wagers and settles nothing on its own.
+  Headline win rate **23.08%**, ROI **-23.91%**. Run 18 settled nothing and
+  logged nothing — no fixture fell in its window, and every flagged contract
+  restated an open row — so `bets/ledger.csv` was not written at all. It is 26
+  settled wagers and settles nothing on its own.
+- **The project's most-replicated result is mostly an algebraic identity, and
+  the bet-rule change it motivated is rejected.** Runs 4, 9, 11 and 17 all
+  found that the model overstates more when it claims more, so run 18 tested
+  the obvious response: an upper **cap** on claimed edge, which run 11's AUC
+  bound does not reach (a cap is not a transform of the forecast, it changes
+  which subset gets bet). Eleven cumulative bands `[3%, cap)`, selected on
+  2021-2023 and confirmed on a held-out 2024. **0 of 11 beat the de-vigged
+  closing line in either phase**, and the best eligible cap (30%) **loses to
+  doing nothing where it was chosen** (-7.11% vs -6.88% fair ROI).
+  `cli sweep-edge-cap`, fifteen tests.
+  - **The reason is the finding.** `claim_gap - market_gap` **is**
+    `market - claimed`, and sorting bets by claimed edge is sorting them by
+    `claimed - market`. The high half is *guaranteed* a worse claim gap
+    whatever the outcomes do. The identity accounts for **160%** of the
+    observed separation on the selection window — the empirical remainder runs
+    the *other* way, and the high half is the better half there (fair ROI
+    -4.80% vs -8.96%) — and **79%** on the holdout, where the remainder
+    reverses sign. On the ledger's own 26 rows it is **32%**.
+  - **Read against the right baseline, the ledger's high half is ordinary.**
+    Scored against the model's claim, its 2 wins give Poisson-binomial
+    **P(X ≤ 2) = 0.0428**. Scored against the market — the only baseline that
+    pays — the same 13 rows give **0.159**. That gap is the identity in
+    p-value form.
+  - **Error against the market does not order with claimed edge**, which is
+    the only thing that could have made a cap pay: slope **+0.463**pp per
+    +10pp of claimed edge in selection (CI [-0.30, +1.27]) and **-0.375** on
+    the holdout (CI [-1.75, +1.24]). Opposite signs, both straddling zero.
+  - **Nothing is retracted.** The ledger observation stands; it has been read
+    against the wrong baseline, and the part of it that carries information
+    does not replicate at 27x the sample. **Any future claim of the form "the
+    bigger the claim, the bigger the overstatement" must say which baseline.**
+- **The `weather` context tier could never have run live.** nflverse populates
+  `temp` and `wind` for **0 of 255 unplayed games** and ~65% of played ones —
+  `2026_02_DET_BUF` acquired 67°F/4mph *hours after it was settled*. At pricing
+  time the column is not worse than the truth, it is empty. Run 12 rejected
+  the tier on AUC anyway (-0.0126, CI [-0.020, -0.006]) so nothing downstream
+  moves, but `features.py`'s "mildly optimistic" was too generous and now says
+  the measured thing. `roof` (84% of unplayed) and `surface` (100%) are the
+  counter-example: schedule-known and legitimately usable.
 - **The one settled row is the sharpest single observation in the book.** Model
   0.380 on Detroit against a de-vigged market 0.355, bought at 0.36, **closed
   at 0.31** — a monotone five-tick walk away from the model's side over four
@@ -278,10 +318,17 @@ honest, dated log of what was tried and what happened.
   out of coverage, **0 in coverage**. Soccer: 117 / 117 / 0 / 0.
   **This is a reporting fix, not a bug fix -- the tally stays at 12.**
 - **Within the settled cohort, the bigger the claimed edge, the bigger the
-  overstatement.** Split at the median claimed edge (19.4%): the low half
-  realized 0.55 wins below its claim, the high half **2.89 below**. That is
-  run 4's selection-audit signature appearing in realized results rather than
-  backtest -- at n = 11 and 12, a direction and not a measurement.
+  overstatement — but most of that is an identity.** Split at the median
+  claimed edge (17.1% at run 17): the low half realized 1.33 wins below its
+  claim, the high half **3.37 below**, replicating a direction first seen at
+  n = 11 and 12. **Run 18 decomposed it and the headline shrank.** Because
+  `claim_gap - market_gap == market - claimed`, sorting on claimed edge
+  mechanically separates the claim gap; on the backtest that accounts for
+  **79-160%** of the separation and on the ledger **32%**. The ledger's
+  residual is real (the high half's fair ROI is -39.36%) and **does not
+  replicate** — two backtest windows of the same league disagree about its
+  sign. Read this against the market, not against the model's claim.
+  `cli sweep-edge-cap`.
 - **The betting rule, not the rating engine, is the main defect.**
   Unconditionally NFL Elo is roughly calibrated. Conditional on a side being
   *bet* it overstates its win probability by **13.7 points**, in every
@@ -311,9 +358,13 @@ honest, dated log of what was tried and what happened.
   not a results gap; checked rather than assumed, because "the cross-check
   found six games the primary lacks" is the shape of a real problem.
 - **160 model configurations backtested, plus 15 context-feature fits in run
-  12. None beat the market.** Nothing adopted, `live_enabled` is `false`
-  everywhere. The last ten were run 17's `season_regression` grid — the one
-  parameter the main sweep never varied, now closed.
+  12 and 11 bet-rule bands in two phases in run 18. None beat the market.**
+  Nothing adopted, `live_enabled` is `false` everywhere. The last ten
+  configurations were run 17's `season_regression` grid — the one parameter
+  the main sweep never varied, now closed. Run 18's edge caps are counted
+  apart because they are a different kind of object: they change which sides
+  get bet, not how any side is priced, and folding them into the model tally
+  would inflate it.
 - **EPL's +8.27% ROI is retired.** Re-run with each season as holdout it is
   1 of 6 positive; pooled **-8.30%**, sd 9.33pp.
 - **Twelve bugs of one shape so far**, all a value that was not what the
@@ -480,6 +531,8 @@ python -m sportsedge.cli backtest-soccer    # canonical window, 1920-2425
 python -m sportsedge.cli selection-audit    # is the model wrong, or the bet rule?
 python -m sportsedge.cli discrimination-report   # is it calibration, or ranking?
 python -m sportsedge.cli sweep-season-regression # the knob the main grid never turned
+python -m sportsedge.cli sweep-edge-cap          # should the rule stop taking
+                                                 #  its own biggest claims?
 ```
 
 **A sweep that adds configurations to the canonical window is another look at
@@ -489,6 +542,15 @@ which is untouched during selection. It also reports **AUC beside log-loss**,
 because run 12 found two feature tiers that improved log-loss while ranking
 worse — and run 17's log-loss pick did exactly that again on the holdout.
 Any future parameter sweep should copy this shape rather than `sweep-nfl`'s.
+`sweep-edge-cap` (run 18) copies it.
+
+**For a rule that changes which sides get bet, the gate is ROI at de-vigged
+fair odds**, not book ROI. Stake $1 per selected side and settle it at
+`1 / fair_market_prob`: then 0 means the selection knows exactly what the
+closing line knows, and positive means it carries information the line lacks.
+Book ROI is fair ROI minus the vig, so it is negative for a rule with no
+information at all, and a rule that merely pays less vig has discovered
+nothing. `sweep-edge-cap` reports both and gates on the first.
 
 Both backtests now **default** to the canonical window rather than requiring
 `--seasons`. The windows used to live only in journal prose, and the example in
@@ -756,20 +818,25 @@ corrupts the record.
   AUC gap either. Nothing found so far suggests a public-data team-strength
   model beats this closing line. That is a finding, not a failure — but adding
   further features without a reason to expect a different outcome would be.
-- **Run 17 swept a real parameter and rejected it on evidence, which ends four
-  runs of apparatus-only work — but it did not find a new direction.** The
-  reasons against the remaining Elo-shaped ideas are now four deep: the AUC
-  deficit is -0.046, CI [-0.064, -0.030] (run 11); context features rank worse
-  (run 12); the whole pre-kickoff window is quiet (run 13); and season
-  regression does not move the gap (run 17). **The honest next step is the
-  09-21 cohort, not another parameter.**
-- **The measurable question nobody has asked yet:** the flagged cohort's mean
-  claimed edge is ~27% and its realized ROI is -23.91%. The gap between
-  *claimed* edge and *realized* return is this project's actual subject and has
-  never been regressed as such — only split at the median (see Status, where
-  the high-edge half overstates by 3.37 wins against the low half's 1.33).
-  A real regression is doable with what is already committed, once the settled
-  book is larger than 26. **09-21 adds 11 rows at once.**
+- **The reasons against the remaining ideas are now five deep**, and run 18
+  closed the last one that was not Elo-shaped: the AUC deficit is -0.046, CI
+  [-0.064, -0.030] (run 11); context features rank worse (run 12); the whole
+  pre-kickoff window is quiet (run 13); season regression does not move the
+  gap (run 17); and the selection pathology that looked like the last
+  available *bet-rule* lever is mostly an artifact of measuring the model
+  against its own claim instead of against the price (run 18). **There is no
+  remaining bet-rule change with a reason to expect a different outcome, and
+  the honest next step is the 09-21 cohort, not another parameter.**
+- ~~**The measurable question nobody has asked yet:** the gap between *claimed*
+  edge and *realized* return has never been regressed, only split at the
+  median.~~ — **run 18 regressed it**, on 930 backtest bets rather than
+  waiting for the ledger. Regressing `won - fair_market_prob` on claimed edge
+  gives **+0.463**pp per +10pp of claimed edge in 2021-2023 (CI [-0.30,
+  +1.27]) and **-0.375** on the 2024 holdout (CI [-1.75, +1.24]): opposite
+  signs, both straddling zero. The median split that motivated the question
+  turns out to be 79-160% identity (see Status). **What remains open is the
+  same regression on realized bets**, which needs a settled book much larger
+  than 26 — 09-21 adds 11 rows at once, and that is still nowhere near enough.
 - **CLV is at 17 real-close rows and needs ~13 more to resolve a quarter
   tick.** The 11 open pre-registered wagers all settle 09-20/09-21 with full
   final-hour capture coverage, so the run after 09-21 should be the first able
@@ -806,7 +873,12 @@ corrupts the record.
 - **Do not "fix" the selection gap with a price or edge filter without a real
   test.** Every price bucket in the NFL backtest is ROI-negative (best
   -3.90% at market >=0.50, CI [-18.9, +11.1]). A filter that improves
-  backtest ROI here is selecting on noise.
+  backtest ROI here is selecting on noise. **Run 18 ran that real test on the
+  edge filter and it failed** — 0 of 11 caps beat the closing line in either
+  phase, and the best eligible one lost to doing nothing where it was chosen.
+  The 29-bet band that posted +4.32% is precisely the noise this bullet warns
+  about, and `sweep-edge-cap`'s pre-specified 100-bet eligibility floor is
+  what keeps it from being adopted.
 - **Beware the blend sweep's own bait.** It reports +10.19% ROI at w=0.05 --
   on 32 bets, CI [-73.9, +94.3], from a weight log-loss says is worse than
   betting nothing. It regenerates on every run. `summarize_blend` prints such

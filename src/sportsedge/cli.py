@@ -13,6 +13,8 @@
                                                 #  which window you used)
     python -m sportsedge.cli sweep-nfl                # parameter grid vs the closing line
     python -m sportsedge.cli sweep-season-regression  # the knob that grid never turned
+    python -m sportsedge.cli sweep-edge-cap           # should the rule stop taking
+                                                      #  its own biggest claims?
     python -m sportsedge.cli selection-audit          # is the model wrong, or the bet rule?
     python -m sportsedge.cli venue-report             # what trading on Kalshi instead costs
     python -m sportsedge.cli kalshi-nfl
@@ -59,7 +61,7 @@ from sportsedge.models.elo import NflEloModel, SoccerEloModel
 from sportsedge.models.live import build_nfl_model, build_soccer_model
 from sportsedge.backtest.engine import backtest_nfl, backtest_soccer
 from sportsedge.backtest import (sweep, selection, kalshi_engine, benchmarks,
-                                 discrimination, context)
+                                 discrimination, context, edge_band)
 from sportsedge.models import features
 from sportsedge.betting import liquidity, recommend as recommend_mod, settle as settle_mod
 from sportsedge.betting import ledger as ledger_mod
@@ -278,6 +280,93 @@ def cmd_sweep_season_regression(args):
           f"{', '.join(str(s) for s in args.confirm_seasons)} --")
     print(out["confirmation"][["role"] + cols + ["roi_ci_lo", "roi_ci_hi"]]
           .to_string(index=False))
+
+
+def _cap_label(cap: float) -> str:
+    return "none" if cap == float("inf") else f"{cap * 100:.0f}%"
+
+
+def _print_cap_table(rows, title):
+    print(f"\n-- {title} --")
+    print(f"{'cap':>6} {'n':>5} {'claim gap':>10} {'mkt gap':>9} "
+          f"{'book ROI':>10} {'fair ROI':>10} {'fair 95% CI':>20} {'beats mkt':>10}")
+    for r in rows:
+        if not r["n_bets"]:
+            print(f"{_cap_label(r['cap']):>6} {0:5d}   (no bets in band)")
+            continue
+        ci = r["fair_ci95_pct"]
+        ci_s = f"[{ci[0]:+6.1f},{ci[1]:+6.1f}]" if ci else ""
+        print(f"{_cap_label(r['cap']):>6} {r['n_bets']:5d} {r['claim_gap_pp']:+10.2f} "
+              f"{r['market_gap_pp']:+9.2f} {r['book_roi_pct']:+9.2f}% "
+              f"{r['fair_roi_pct']:+9.2f}% {ci_s:>20} {str(r['beats_market']):>10}")
+
+
+def cmd_sweep_edge_cap(args):
+    """Should the bet rule stop taking its own biggest claims?
+
+    The ledger's replicating high-edge/low-edge split measures the model
+    against its own CLAIM. This asks the question that pays: does the model's
+    error against the DE-VIGGED CLOSING LINE order with the size of the claim,
+    and does any cap beat the uncapped rule out-of-sample?
+    """
+    sides_kwargs = dict(edge_threshold=0.0)  # collect every priced side; band later
+    sel = selection.nfl_sides(
+        seasons=tuple(args.burn_in) + tuple(args.select_seasons),
+        test_seasons=tuple(args.select_seasons), **sides_kwargs)
+    hold = selection.nfl_sides(
+        seasons=tuple(args.burn_in) + tuple(args.select_seasons) + tuple(args.confirm_seasons),
+        test_seasons=tuple(args.confirm_seasons), **sides_kwargs)
+
+    out = edge_band.sweep_edge_cap(sel, hold, floor=args.edge_threshold / 100,
+                                   min_selection_bets=args.min_selection_bets)
+
+    _print_cap_table(out["selection"], "selection: test seasons "
+                     + ", ".join(str(s) for s in args.select_seasons))
+    _print_cap_table(out["holdout"], "confirmation: held-out "
+                     + ", ".join(str(s) for s in args.confirm_seasons))
+
+    # The same decomposition on the real bets, so the ledger's replicating
+    # result and the backtest's verdict on it are one command, not two.
+    splits = dict(out["median_split"])
+    try:
+        splits["ledger"] = edge_band.median_split(
+            edge_band.sides_from_ledger(ledger_mod._load()), floor=args.edge_threshold / 100)
+    except (FileNotFoundError, KeyError, ValueError) as exc:  # pragma: no cover
+        _warn(f"ledger split unavailable: {exc}")
+
+    print("\n-- the ledger's own median split, decomposed --")
+    print(f"{'phase':>10} {'half':>5} {'n':>5} {'edge':>7} {'claim gap':>10} "
+          f"{'mkt gap':>9} {'identity':>9} {'fair ROI':>10}")
+    for phase, ms in splits.items():
+        for half in ("low", "high"):
+            h = ms.get(half, {})
+            if not h.get("n"):
+                continue
+            print(f"{phase:>10} {half:>5} {h['n']:5d} {h['mean_claimed_edge_pct']:6.1f}% "
+                  f"{h['claim_gap_pp']:+10.2f} {h['market_gap_pp']:+9.2f} "
+                  f"{h['identity_pp']:+9.2f} {h['fair_roi_pct']:+9.2f}%")
+        if ms.get("separation_pp") is not None:
+            print(f"{phase:>10}  separation {ms['separation_pp']:+.2f}pp = "
+                  f"identity {ms['mechanical_pp']:+.2f}pp + empirical "
+                  f"{ms['empirical_pp']:+.2f}pp  "
+                  f"({ms['mechanical_share'] * 100:.0f}% mechanical)")
+
+    print("\n-- does error-vs-market order with claimed edge? --")
+    for phase, t in out["market_gap_trend"].items():
+        if t["slope_pp_per_10pp"] is None:
+            print(f"{phase:>10}: too few sides")
+            continue
+        print(f"{phase:>10}: {t['slope_pp_per_10pp']:+.3f} pp per +10pp of claimed edge, "
+              f"95% CI [{t['ci95'][0]:+.3f}, {t['ci95'][1]:+.3f}]  "
+              f"orders_with_edge={t['orders_with_edge']}")
+
+    verdict = {k: out[k] for k in ("floor", "min_selection_bets", "n_eligible",
+                                   "beats_market_selection", "beats_market_holdout",
+                                   "adopt", "reasons")}
+    verdict["pick"] = out["pick"]
+    verdict["pick_holdout"] = out["pick_holdout"]
+    verdict["incumbent"] = out["incumbent"]
+    print("\n" + json.dumps(verdict, indent=2, default=float))
 
 
 def cmd_selection_audit(args):
@@ -765,6 +854,26 @@ def build_parser():
                         "untouched during selection")
     p.add_argument("--edge-threshold", type=float, default=3.0, help="percent")
     p.set_defaults(func=cmd_sweep_season_regression)
+
+    p = sub.add_parser("sweep-edge-cap",
+                       help="should the bet rule stop taking its own biggest claims?")
+    p.add_argument("--burn-in", nargs="+", type=int,
+                   default=list(edge_band.DEFAULT_BURN_IN),
+                   help="seasons that warm the ratings but are never scored")
+    p.add_argument("--select-seasons", nargs="+", type=int,
+                   default=list(edge_band.DEFAULT_SELECTION_SEASONS),
+                   help="seasons the cap is selected on")
+    p.add_argument("--confirm-seasons", nargs="+", type=int,
+                   default=list(edge_band.DEFAULT_HOLDOUT_SEASONS),
+                   help="holdout the selected cap is confirmed on; "
+                        "untouched during selection")
+    p.add_argument("--edge-threshold", type=float, default=3.0,
+                   help="percent; the FLOOR every band starts at")
+    p.add_argument("--min-selection-bets", type=int,
+                   default=edge_band.MIN_SELECTION_BETS,
+                   help="a band with fewer selection bets than this is not "
+                        "eligible to be picked")
+    p.set_defaults(func=cmd_sweep_edge_cap)
 
     p = sub.add_parser("backtest-soccer")
     p.add_argument("--league", default=benchmarks.EPL_LEAGUE)

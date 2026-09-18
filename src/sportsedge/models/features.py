@@ -34,9 +34,19 @@ inside a clean one:
   schedule  rest, short week, divisional, neutral site. SCHEDULE facts, known
             weeks ahead. No lookahead risk whatsoever. This is the only tier
             whose result could be deployed as-is.
-  weather   adds roof/temp/wind. nflverse records the conditions the game was
-            PLAYED in; a model pricing at T-8h has a forecast instead. Mildly
-            optimistic -- an upper bound on what weather could contribute.
+  weather   adds roof/temp/wind. "Mildly optimistic" is what this line said
+            through run 17, and run 18 measured it: `temp` and `wind` are
+            populated for 0 of 255 UNPLAYED games in the committed table and
+            ~65% of played ones, and `2026_02_DET_BUF` acquired 67F/4mph some
+            hours AFTER it was settled. The columns do not exist at pricing
+            time at all -- a model at T-8h does not have a worse version of
+            this feature, it has an empty one. So this tier is not an upper
+            bound that a forecast would erode; it is unavailable live in the
+            form tested, and would need a weather API this repo does not have.
+            Run 12 rejected it on AUC anyway (-0.0126, CI [-0.020, -0.006]),
+            so nothing downstream moves. `roof` (839/1000 of unplayed) and
+            `surface` (all of them) ARE known in advance; only temp/wind are
+            post-hoc.
   qb        adds "did this team's starting QB change since its last game".
             nflverse names the QB who actually STARTED. Inactives post ~90
             minutes before kickoff, so this is nearly knowable, but it is not
