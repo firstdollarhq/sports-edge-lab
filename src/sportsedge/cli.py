@@ -12,6 +12,7 @@
                                                 #  different question, and say
                                                 #  which window you used)
     python -m sportsedge.cli sweep-nfl                # parameter grid vs the closing line
+    python -m sportsedge.cli sweep-season-regression  # the knob that grid never turned
     python -m sportsedge.cli selection-audit          # is the model wrong, or the bet rule?
     python -m sportsedge.cli venue-report             # what trading on Kalshi instead costs
     python -m sportsedge.cli kalshi-nfl
@@ -251,6 +252,32 @@ def cmd_sweep_nfl(args):
     if args.out:
         grid.to_csv(args.out, index=False)
         print(f"\nfull grid -> {args.out}")
+
+
+def cmd_sweep_season_regression(args):
+    """The one NflConfig parameter the main grid never varied.
+
+    Selected on 2021-2023, confirmed on a 2024 holdout, scored on log-loss and
+    AUC because run 12 found log-loss can prefer a config that ranks worse.
+    """
+    out = sweep.sweep_season_regression(
+        seasons=tuple(args.seasons),
+        select_seasons=tuple(args.select_seasons),
+        confirm_seasons=tuple(args.confirm_seasons),
+        edge_threshold=args.edge_threshold / 100,
+    )
+    print(json.dumps(out["verdict"], indent=2, default=float))
+
+    cols = ["season_regression", "n_games", "log_loss", "market_log_loss",
+            "ll_gap_vs_market", "auc_model", "auc_market", "auc_gap_vs_market",
+            "n_bets", "roi_pct"]
+    print("\n-- selection: test seasons "
+          f"{', '.join(str(s) for s in args.select_seasons)} --")
+    print(out["selection"][cols].to_string(index=False))
+    print("\n-- confirmation: held-out "
+          f"{', '.join(str(s) for s in args.confirm_seasons)} --")
+    print(out["confirmation"][["role"] + cols + ["roi_ci_lo", "roi_ci_hi"]]
+          .to_string(index=False))
 
 
 def cmd_selection_audit(args):
@@ -725,6 +752,19 @@ def build_parser():
     p.add_argument("--edge-threshold", type=float, default=3.0, help="percent")
     p.add_argument("--out", default=None, help="write the full grid to this CSV")
     p.set_defaults(func=cmd_sweep_nfl)
+
+    p = sub.add_parser("sweep-season-regression",
+                       help="the one NflConfig parameter sweep-nfl never varied")
+    p.add_argument("--seasons", nargs="+", type=int, default=list(sweep.DEFAULT_SEASONS))
+    p.add_argument("--select-seasons", nargs="+", type=int,
+                   default=list(sweep.SEASON_REGRESSION_SELECT),
+                   help="seasons the grid is selected on")
+    p.add_argument("--confirm-seasons", nargs="+", type=int,
+                   default=list(sweep.SEASON_REGRESSION_CONFIRM),
+                   help="holdout the selected value is confirmed on; "
+                        "untouched during selection")
+    p.add_argument("--edge-threshold", type=float, default=3.0, help="percent")
+    p.set_defaults(func=cmd_sweep_season_regression)
 
     p = sub.add_parser("backtest-soccer")
     p.add_argument("--league", default=benchmarks.EPL_LEAGUE)
