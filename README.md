@@ -5,15 +5,68 @@ A research project testing predictive sports models against real market odds.
 to find a real, validated edge, not to confirm a bias. See `journal/` for an
 honest, dated log of what was tried and what happened.
 
-## Status (2026-09-19, scheduled run #19)
+## Status (2026-09-19, scheduled run #20)
 
-- **0 live bets. 28 settled shadow bets (7 wins), 35 pending, 67 void.**
-  Headline win rate **25.00%**, ROI **-18.18%**. Brentford 3-0 Chelsea settled
-  the two open rows on that fixture — the `home` side **won** at a claimed
-  0.418 against a de-vigged market 0.318, the `draw` side lost. **The ROI
-  improved 5.7 points on two wagers**, which is the noise this project exists
-  to not be fooled by; it is reported as arithmetic, not as progress. It is 28
-  settled wagers and settles nothing on its own.
+- **0 live bets. 29 settled shadow bets (8 wins), 35 pending, 67 void.**
+  Headline win rate **27.59%**, ROI **-8.23%**. Aston Villa won at Tottenham —
+  the `away` side, claimed 0.483 against a de-vigged market 0.266, paid 3.7037,
+  **closed at 4.1667 for -3 ticks of CLV**. **The ROI improved ten points on
+  one wager**, which is the noise this project exists to not be fooled by; it
+  is reported as arithmetic, not as progress. It is 29 settled wagers and
+  settles nothing on its own.
+- **Elo enters a newly-promoted team at 1500, and the bet rule buys the
+  difference.** Over the 8 teams making their first EPL appearance in the table
+  (2020-21..2025-26), the model's probability for the debutant side runs
+  **+0.0447 above the de-vigged market** against a realized **0.2434** — the
+  market's **0.2451** is almost exactly right, so the gap is the model's, and
+  **all 8 teams are biased the same way** (cluster-bootstrap 95% CI over teams
+  **[+0.0253, +0.0634]**). It is the initialisation and not the draw of teams:
+  the bias decays monotonically as evidence arrives — **+0.1016** over a
+  debutant's first 5 games, +0.0738 (5–9), +0.0413 (10–18), **+0.0237**
+  (19–37) — and every debutant finishes its first season below where it
+  started.
+  - **The bet rule amplifies it**: **62.5%** of debutant sides get flagged
+    against **36.4%** of established ones, at a mean claimed edge of **+35.8%**
+    against +19.2%. The ROI gap (-11.77% vs -7.12%) is **not** the solid part —
+    per team it swings from -81.67% to +44.09% across 8 clusters.
+  - **It is live.** Coventry and Hull are 2026-27 debutants with **four games**
+    of history each; Hull sits **14th in the Elo book at 1534**, above Fulham,
+    Crystal Palace and Tottenham. The largest claimed edge on the entire EPL
+    board is `Hull @ Newcastle` away at **+57.7%**.
+  - **A second-order effect makes 1500 wrong in a way that is easy to miss.**
+    `backtest_soccer` never regresses to the mean and relegated teams carry
+    their low ratings out of the division, so the surviving book drifts up: the
+    current 20-team mean is about **1572**. A debutant enters ~72 points below
+    today's league mean, which is why the bias is +0.045 rather than +0.10 —
+    the prior is wrong and partially self-correcting, which is the worst way
+    for it to be wrong.
+- **The correction was swept out-of-sample and REJECTED.** Seeding a promoted
+  side at `1500 - penalty` (the naive version — lowering `default_rating` — is
+  a **no-op**, since Elo differences are translation-invariant and the first
+  season's teams are all unseen; the sweep returned an identical row for every
+  value from 1500 to 1300). Selected at **penalty = 100** on 2020-21..2023-24
+  from a smooth single-minimum log-loss curve; confirmed on an untouched
+  2024-25..2025-26 holdout.
+  - **The bias correction generalises and nothing else does.** Holdout
+    debutant bias +0.0606 → **+0.0154** and flag rate 81.6% → **36.8%**, but
+    holdout log-loss improves by **0.000056**, debutant-game log-loss gets
+    *worse*, and ROI moves the wrong way (+1.32% → -0.27%).
+  - Pooled over six seasons with season as the cluster: per-game log-loss
+    **-0.000987, CI [-0.00255, +0.00058]**; ROI **-0.622pp, CI [-3.55, +2.17]**,
+    P(better) 0.349. Better on overall log-loss in **3 of 6** seasons; better on
+    the debutant bias in **6 of 6**. The surgical version — keep the ratings,
+    just decline to bet debutant sides — is also nothing (**+0.371pp**, CI
+    straddling zero), which is the verdict run 18 reached about the edge cap.
+  - **What the rejection teaches.** Runs 11, 12 and 17 tested effects that
+    turned out not to be real. **This one is real** — and correcting it still
+    buys nothing. That is evidence the deficit is **not concentrated in a
+    patchable subgroup**. The model is not losing because of promoted teams; it
+    is losing everywhere, and promoted teams are where it is easiest to see.
+  - What survived is a counter: `betting/history.py`, reported by `recommend`
+    as `thin_history`. A fixture is thin when **either** side is under 20 games
+    (`elo_diff` is a difference). **It gates nothing**, and a test asserts the
+    rec list comes back unmodified so a future run cannot quietly turn it into
+    the filter this run rejected. NFL reports 0 and always will.
 - **The tick that every CLV mean is read against was computed with the wrong
   formula, and the error ran in the dangerous direction.** `_clv_resolution`
   priced one tick as `p / (p - tick) - 1` — the cost of buying a cent *cheaper*,
@@ -884,15 +937,27 @@ corrupts the record.
   AUC gap either. Nothing found so far suggests a public-data team-strength
   model beats this closing line. That is a finding, not a failure — but adding
   further features without a reason to expect a different outcome would be.
-- **The reasons against the remaining ideas are now five deep**, and run 18
-  closed the last one that was not Elo-shaped: the AUC deficit is -0.046, CI
-  [-0.064, -0.030] (run 11); context features rank worse (run 12); the whole
-  pre-kickoff window is quiet (run 13); season regression does not move the
-  gap (run 17); and the selection pathology that looked like the last
+- **The reasons against the remaining ideas are now six deep**: the AUC deficit
+  is -0.046, CI [-0.064, -0.030] (run 11); context features rank worse (run
+  12); the whole pre-kickoff window is quiet (run 13); season regression does
+  not move the gap (run 17); the selection pathology that looked like the last
   available *bet-rule* lever is mostly an artifact of measuring the model
-  against its own claim instead of against the price (run 18). **There is no
-  remaining bet-rule change with a reason to expect a different outcome, and
-  the honest next step is the 09-21 cohort, not another parameter.**
+  against its own claim instead of against the price (run 18); **and run 20's
+  promoted-team bias is real, mechanical, live — and correcting it changes
+  nothing.** **There is no remaining bet-rule change with a reason to expect a
+  different outcome, and the honest next step is the 09-21 cohort, not another
+  parameter.**
+- **Run 20's result is the most informative of the six, because of how it
+  fails.** Runs 11, 12 and 17 rejected changes aimed at effects that turned out
+  not to be real. Run 20 found an effect that **is** real — +0.0447, 8 of 8
+  teams, a monotone decay with a mechanical explanation, and a live position on
+  the board — fixed it out-of-sample, and got **nothing**: log-loss CI
+  [-0.00255, +0.00058], ROI worse. That is evidence the deficit is **not
+  concentrated in an identifiable subgroup waiting to be patched**, which
+  retires a whole family of "find the bad subgroup" ideas rather than one of
+  them. **Do not re-raise the promotion prior.** A promoted-team *feature*
+  carrying information Elo lacks (form in the division below) would be a new
+  question, and it is a data-source question, not a parameter question.
 - ~~**The measurable question nobody has asked yet:** the gap between *claimed*
   edge and *realized* return has never been regressed, only split at the
   median.~~ — **run 18 regressed it**, on 930 backtest bets rather than
