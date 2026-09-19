@@ -69,6 +69,7 @@ from sportsedge.betting import scorecard
 from sportsedge.betting import line_movement
 from sportsedge.betting import fill_quality
 from sportsedge.betting import edge_decay
+from sportsedge.betting import history
 from sportsedge.betting.ledger import summarize
 
 SPORT_TO_LEAGUE_KEY = {"nfl": "nfl", "soccer": "epl"}
@@ -636,6 +637,10 @@ def cmd_recommend(args):
             "mode": mode, "live_enabled": live,
             "logged": logged, "skipped_duplicate": skipped,
             "flagged_rate_pct": round(100 * len(recs) / max(1, len(rows)), 1),
+            # Observational only -- gates nothing, and is here because the
+            # model's largest EPL claim on 2026-09-19 sat on a team with four
+            # games of rating history. See betting/history.py.
+            "thin_history": history.thin_history(recs, games),
             "provenance": prov,
         }
         for r in sorted(recs, key=lambda x: -x["edge_pct"])[:args.top]:
