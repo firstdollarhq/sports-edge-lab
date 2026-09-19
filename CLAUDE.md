@@ -172,17 +172,35 @@ smallest change the venue can express. `*/15` would resolve movement that is
 not there. **Do not raise it without a new reason; a thicker book or a second
 venue would be one, "we have not tried it" is not.**
 
-**Read every CLV mean against the tick.** One 1c tick is worth ~3% `clv_pct`
-at the prices this ledger pays, so the -1.14% real-close figure is 0.38 of a
-tick and the median is exactly 0.000%. `ledger-summary` now prints a
-`clv_resolution` block next to the mean. **Do not quote a CLV mean without
-the tick value beside it, and do not treat a sub-tick reading as a magnitude.**
+**Read every CLV mean against the tick, and prefer ticks outright.** The exact
+conversion is `ticks = clv_pct / placed_decimal_odds`, and the check that it
+is right is that every settled CLV in this ledger comes out an **exact
+integer** -- the venue quotes whole cents, so nothing else is possible.
+Run 19 corrected this: the old `p / (p - tick) - 1` was the cost of buying a
+cent *cheaper*, a different quantity, and it ran 1.9-9.1% high per row, which
+made genuine one-tick moves read as 0.96-0.98 ticks. One tick is **3.3915%**
+`clv_pct` at this ledger's prices, not 3.5253%. `ledger-summary` prints
+`clv_resolution` next to the mean and `clv_precision_real_close` beside it.
+**Do not quote a CLV mean without the tick value beside it, and do not treat a
+sub-tick reading as a magnitude.**
 
 This does **not** mean CLV is unmeasurable here -- run 13 nearly recorded that
-and the arithmetic refused it. The real-close cohort's SE is already 1.03%,
-inside half a tick; ~30 rows would resolve a quarter tick. The instrument
-works and currently reads **no detectable edge**. Say that, not "CLV is
-noise".
+and the arithmetic refused it. The instrument works and currently reads **no
+detectable edge**. Say that, not "CLV is noise".
+
+**But do not carry a convergence projection forward as if it were a
+schedule.** Runs 17-18 said "~30 rows resolve a quarter tick". Run 19 added
+**two** rows and the SD rose **39%**, moving the requirement to **~90**; the
+cohort is at 19. The cause is structural, not bad luck: **CLV variance scales
+with placement lag** (corr 0.629 on |ticks|, cluster-bootstrap [0.024, 0.831]),
+and lag is set by when a contract opens, not by any decision this project
+makes. Quote `n_for_target_se` from the current run rather than a number from
+an old journal.
+
+**Placement lag is not a variance knob.** Betting closer to kickoff would
+tighten the CLV estimate and shrink the thing being estimated by the same
+mechanism -- a bet struck at T-1h has almost no variance and almost nothing to
+measure. Do not propose it as a precision fix.
 
 ## Branch hygiene
 

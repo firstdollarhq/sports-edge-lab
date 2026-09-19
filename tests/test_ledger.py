@@ -216,10 +216,15 @@ def test_clv_resolution_prices_one_tick_in_clv_units(tmp_path, monkeypatch):
     assert res["n"] == 1
     assert res["tick"] == 0.01
     assert res["mean_price_paid"] == pytest.approx(0.50)
-    # 0.50 / 0.49 - 1 = 2.04%
-    assert res["one_tick_as_clv_pct"] == pytest.approx(2.0408, abs=1e-3)
-    # The row moved exactly one tick, so |clv| should be ~1 tick.
-    assert res["mean_abs_ticks"] == pytest.approx(1.0, abs=0.05)
+    # One tick at a 0.50 contract is worth the decimal odds paid, 2.00% --
+    # EXACTLY, not the 2.0408% this asserted until run 19. That old value was
+    # `0.50 / 0.49 - 1`, the cost of buying a cent lower, which is a different
+    # quantity; see `_one_tick_as_clv_pct` for the derivation.
+    assert res["one_tick_as_clv_pct"] == pytest.approx(2.0, abs=1e-12)
+    # The row moved exactly one tick, so |clv| is exactly one tick. The old
+    # conversion made this read 0.98 and the assertion needed abs=0.05 to
+    # pass; a correct conversion needs no tolerance at all.
+    assert res["mean_abs_ticks"] == pytest.approx(1.0, abs=1e-12)
     assert res["share_unmoved"] == pytest.approx(0.0)
 
 
@@ -247,9 +252,15 @@ def test_clv_resolution_flags_a_ledger_that_never_moved(tmp_path, monkeypatch):
     assert res["share_unmoved"] == pytest.approx(1.0)
 
 
-def test_clv_resolution_survives_a_contract_priced_under_one_tick(tmp_path, monkeypatch):
-    """A 1c contract has no cheaper neighbour, so 'one tick better' is not a
-    price. It must not divide by zero or drop the whole report."""
+def test_clv_resolution_survives_a_contract_priced_at_one_tick(tmp_path, monkeypatch):
+    """A 1c contract has no CHEAPER neighbour, but it does have a dearer one.
+
+    Under the old conversion `p / (p - tick)` this row was a division by zero
+    and had to be dropped. The exact conversion has no singularity: one tick
+    of movement at a 1c contract takes it to 2c, which halves the decimal odds
+    and is worth 100% CLV. That is a real number and the row belongs in the
+    mean, so this now asserts it is KEPT rather than skipped.
+    """
     monkeypatch.setattr(ledger_mod, "LEDGER_PATH", tmp_path / "ledger.csv")
 
     bet = _add(ledger_mod.SHADOW, market_odds_decimal=100.0)   # 0.01
@@ -259,5 +270,107 @@ def test_clv_resolution_survives_a_contract_priced_under_one_tick(tmp_path, monk
 
     res = ledger_mod.summarize()["shadow"]["clv_resolution"]
     assert res["n"] == 2
-    # The 1c row contributes no tick value; the 50c row still does.
-    assert res["one_tick_as_clv_pct"] == pytest.approx(2.0408, abs=1e-3)
+    # Both rows contribute: 100.0% at the 1c contract, 2.0% at the 50c one.
+    assert res["one_tick_as_clv_pct"] == pytest.approx(51.0, abs=1e-12)
+
+
+# --- CLV in exact ticks, and how precisely the mean is known ----------------
+
+def _set_reference_lag(lags):
+    """Stamp `clv_reference_lag_h` on the settled rows, as `settle` does.
+
+    `record_result` does not write the column -- the lag is known to the
+    settlement pass, which picks the reference snapshot -- so a test that
+    needs the real-close split has to set it the same way.
+    """
+    df = ledger_mod._load()
+    df["clv_reference_lag_h"] = lags
+    ledger_mod._save(df)
+
+def test_every_settled_clv_in_the_committed_ledger_is_an_integer_tick():
+    """The venue quotes whole cents, so under a correct conversion every CLV
+    in `bets/ledger.csv` must be an exact integer number of ticks.
+
+    This is the evidence that `clv_pct / placed_decimal` is the right
+    conversion and `p / (p - tick) - 1` was not. It reads the committed
+    ledger on purpose: a synthetic fixture would prove only that the formula
+    agrees with itself, whereas this fails if the conversion drifts OR if a
+    future settlement writes a CLV that no whole-cent move could produce.
+    """
+    import pandas as pd
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "bets" / "ledger.csv"
+    df = pd.read_csv(path)
+    rows = df[df["status"].isin(["won", "lost"]) & df["clv_pct"].notna()]
+    assert len(rows) >= 28
+
+    ticks = rows["clv_pct"].astype(float) / rows["market_odds_decimal"].astype(float)
+    assert (ticks - ticks.round()).abs().max() < 1e-9
+
+
+def test_the_old_tick_conversion_was_biased_high_and_that_biased_ticks_low(tmp_path, monkeypatch):
+    """Pins the direction of the error the exact conversion replaced.
+
+    `p / (p - tick) - 1` overstates one tick, so dividing by it understates
+    how many ticks a move was -- making a real one-tick move read as less
+    than a tick. For a field whose entire job is to stop sub-tick means being
+    read as signal, an error in that direction is the dangerous one.
+    """
+    monkeypatch.setattr(ledger_mod, "LEDGER_PATH", tmp_path / "ledger.csv")
+
+    bet = _add(ledger_mod.SHADOW, market_odds_decimal=4.0)     # 0.25
+    ledger_mod.record_result(bet, "won", closing_odds_decimal=1.0 / 0.26)
+
+    res = ledger_mod.summarize()["shadow"]["clv_resolution"]
+    exact, old = 4.0, (0.25 / 0.24 - 1) * 100                  # 4.1667
+    assert old > exact                                         # old ran high
+    assert res["one_tick_as_clv_pct"] == pytest.approx(exact, abs=1e-12)
+
+    # The row moved exactly one tick (0.25 -> 0.26). Under the exact
+    # conversion that reads 1.000; under the old one it would have read
+    # 4.0 / 4.1667 = 0.96 -- a genuine tick, reported as less than a tick.
+    assert res["mean_abs_ticks"] == pytest.approx(1.0, abs=1e-12)
+    assert exact / old == pytest.approx(0.96, abs=0.005)
+
+
+def test_clv_precision_reports_the_interval_and_the_rows_still_needed(tmp_path, monkeypatch):
+    """The mean alone cannot say whether 'no edge' is measured or merely
+    unresolved, so the block carries an SE, an interval and a required n."""
+    monkeypatch.setattr(ledger_mod, "LEDGER_PATH", tmp_path / "ledger.csv")
+
+    # Four rows at 0.50, moving +1, -1, +1, -1 ticks. Mean is exactly 0 and
+    # the sample sd (ddof=1) is sqrt(4/3) = 1.1547 ticks, so SE = 0.5774 and
+    # n for SE = 0.25 is (1.1547/0.25)^2 = 21.3 -> 21.
+    for i, close_p in enumerate((0.51, 0.49, 0.51, 0.49)):
+        bet = _add(ledger_mod.SHADOW, game_id=f"g{i}", market_odds_decimal=2.0)
+        ledger_mod.record_result(bet, "lost", closing_odds_decimal=1.0 / close_p)
+    _set_reference_lag(0.5)
+
+    pr = ledger_mod.summarize()["shadow"]["clv_precision_real_close"]
+    assert pr["n"] == 4
+    assert pr["mean_ticks"] == pytest.approx(0.0, abs=1e-12)
+    import math
+    sd = math.sqrt(4.0 / 3.0)
+    assert pr["sd_ticks"] == pytest.approx(sd, abs=1e-12)
+    assert pr["se_ticks"] == pytest.approx(sd / 2.0, abs=1e-12)
+    assert pr["ci95_ticks"][0] == pytest.approx(-1.96 * sd / 2.0, abs=1e-9)
+    assert pr["n_for_target_se"] == 21
+
+
+def test_clv_precision_excludes_stale_references(tmp_path, monkeypatch):
+    """A reference from 8 hours out is not a close. The precision block must
+    describe the real-close cohort only -- the cohort the headline quotes."""
+    monkeypatch.setattr(ledger_mod, "LEDGER_PATH", tmp_path / "ledger.csv")
+
+    for i in range(4):
+        bet = _add(ledger_mod.SHADOW, game_id=f"g{i}", market_odds_decimal=2.0)
+        ledger_mod.record_result(bet, "lost", closing_odds_decimal=1.0 / 0.51)
+    _set_reference_lag([0.4, 0.4, 8.0, 8.0])
+
+    shadow = ledger_mod.summarize()["shadow"]
+    assert shadow["clv_real_close_n"] == 2
+    assert shadow["clv_precision_real_close"]["n"] == 2
+    # `clv_resolution` still covers every row with a CLV; the two differ, and
+    # quoting the wrong one is the error the split exists to prevent.
+    assert shadow["clv_resolution"]["n"] == 4

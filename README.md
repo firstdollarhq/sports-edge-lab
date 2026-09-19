@@ -5,13 +5,71 @@ A research project testing predictive sports models against real market odds.
 to find a real, validated edge, not to confirm a bias. See `journal/` for an
 honest, dated log of what was tried and what happened.
 
-## Status (2026-09-18, scheduled run #18)
+## Status (2026-09-19, scheduled run #19)
 
-- **0 live bets. 26 settled shadow bets (6 wins), 35 pending, 67 void.**
-  Headline win rate **23.08%**, ROI **-23.91%**. Run 18 settled nothing and
-  logged nothing — no fixture fell in its window, and every flagged contract
-  restated an open row — so `bets/ledger.csv` was not written at all. It is 26
+- **0 live bets. 28 settled shadow bets (7 wins), 35 pending, 67 void.**
+  Headline win rate **25.00%**, ROI **-18.18%**. Brentford 3-0 Chelsea settled
+  the two open rows on that fixture — the `home` side **won** at a claimed
+  0.418 against a de-vigged market 0.318, the `draw` side lost. **The ROI
+  improved 5.7 points on two wagers**, which is the noise this project exists
+  to not be fooled by; it is reported as arithmetic, not as progress. It is 28
   settled wagers and settles nothing on its own.
+- **The tick that every CLV mean is read against was computed with the wrong
+  formula, and the error ran in the dangerous direction.** `_clv_resolution`
+  priced one tick as `p / (p - tick) - 1` — the cost of buying a cent *cheaper*,
+  which is not the quantity CLV moves in. The exact conversion is
+  `ticks = clv_pct / placed_decimal`, and the evidence it is right rather than
+  merely tidier is that under it **every settled CLV in the ledger is an exact
+  integer** (max deviation 8.4e-15), as it must be on a venue that quotes whole
+  cents. The old formula ran **1.9%–9.1% high per row, +4.3% on the mean**,
+  which biased `mean_abs_ticks` **down** — a genuine one-tick move read as
+  0.96–0.98 ticks. One tick is **3.3915%** at this ledger's prices, not 3.5375%;
+  `mean_abs_ticks` is **1.2500** (35 ticks / 28 rows), not 1.2083. **No price,
+  selection or settlement moves** — this changes how a number is reported.
+  - The old formula divided by zero at a 1c contract, so those rows were
+    dropped and a test pinned the exclusion. The exact one has no singularity:
+    a tick at 1c takes it to 2c, halving the decimal odds, worth **100% CLV**.
+    That row now belongs in the mean and the test asserts it is **kept**.
+- **The CLV cohort got *less* precise by getting bigger, and run 18's
+  projection is optimistic by a factor of three.** Two rows raised the SD
+  **39%** (5.037 → 6.995 in `clv_pct`; the n=17 SE reproduces run 17's 1.222%
+  digit-for-digit, so only the data moved). Required rows for a quarter-tick SE
+  went from **~30 to ~90**; the cohort is at **19**.
+  - In exact ticks: mean **-0.105**, median **0.000**, sd 2.378, SE 0.546,
+    **95% CI [-1.175, +0.964]**. The reading is unchanged — **no detectable
+    edge** — and the uncertainty is ±1.07 ticks, wider than run 18's framing
+    implied.
+  - **Why it will keep moving: CLV magnitude scales with placement lag.** The
+    two new rows were struck at **T-123.6h**; every prior row sat at T-48h to
+    T-90h. By lag: T-48..50h **0.900** mean abs ticks (n=10), T-53..57h 0.750
+    (n=4), T-75..124h **3.200** (n=5). `corr(lag, |ticks|) = 0.629`,
+    cluster-bootstrapped over 17 games to **[0.024, 0.831]**, stable under
+    leave-one-game-out (0.528–0.722). Suggestive, not established — but enough
+    to disqualify a projection that assumes a fixed SD. Required n by mix:
+    **43** (short-lag only), **90** (current), **129** (long-lag only). The
+    recommender logs a side the first time it sees an edge, so lag is set by
+    when a contract opens, not by any decision — hence `n_for_target_se` is now
+    reported beside the mean rather than written into a journal and inherited.
+  - **Placement lag is not a variance knob.** Betting later would tighten the
+    estimate and shrink the estimand by the same mechanism: a bet struck at
+    T-1h has almost no variance *and* almost nothing to measure.
+  - **This does not contradict run 13.** Its 0.0107 mean EPL move was measured
+    from a median first capture of T-74h; these bets were struck at T-124h.
+    `*/30` is untouched and stays untouched.
+- **Run 16's ESPN supplement fired against a real gap for the first time, and
+  it worked — but the gap was not the outage it was built for.**
+  football-data.co.uk is **up and simply publishes on a lag**: its latest row
+  is **2026-09-14**, ESPN carried the 09-18 fixture by 06:04Z, and the two
+  wagers settled this run sit on it. `verify-settlements` on the primary alone
+  checks **120 and leaves 3 unmatched**; with the supplement, **123 checked,
+  123 agreed, 0 unmatched**. **This is the common case, not the failure case** —
+  any midweek or Friday fixture settles on Kalshi before the primary's CSV
+  catches up — so the supplement is load-bearing on the normal path.
+  - One existing test had to be rewritten rather than patched:
+    `test_espn_results_reproduce_the_primary_ratings_exactly` asserted ESPN
+    supplies *exactly* the primary's post-cutoff rows, true only while the two
+    were level. ESPN is now a fixture **ahead**, so the comparison is scoped to
+    where both have published and the lead is asserted separately as `>=`.
 - **The project's most-replicated result is mostly an algebraic identity, and
   the bet-rule change it motivated is rejected.** Runs 4, 9, 11 and 17 all
   found that the model overstates more when it claims more, so run 18 tested
@@ -86,8 +144,9 @@ honest, dated log of what was tried and what happened.
   with came back byte-identical to what the live source now returns** — which
   retroactively audits runs 15-16: their claim that the cached table was
   missing no played game rested on ESPN, and the primary source has now
-  confirmed it directly. Run 16's ESPN supplement **never fired** and is still
-  untested against a real gap — deferred, not validated.
+  confirmed it directly. (Run 16's ESPN supplement had **never fired** as of
+  run 18; **run 19 fired it against a real gap** — see the top of this
+  section.)
 - **The EPL rating path no longer depends on that host (run 16).** When the
   committed table falls behind, `ingest/sources` now fills the gap with ESPN's
   played games, in memory, at load time. `build_soccer_model` reads season,
@@ -109,10 +168,13 @@ honest, dated log of what was tried and what happened.
     do silently; and the supplement never reaches a backtest, since
     `cli._load_games` reads the committed table directly and odds-free rows are
     holes, not games.
-  - **It never fired.** No EPL fixture fell between 09-14 and 09-19, so runs 16
-    and 17 both exercised none of it, and the source recovered on 09-18 before
-    the 09-19 fixtures it was built for. **Deferred, not validated** — the next
-    outage will still be its first real run.
+  - **It fired on 2026-09-19 (run 19), and not because of an outage.** Runs 16
+    and 17 exercised none of it and run 18 recorded it as deferred. What
+    actually exercised it was the primary source's ordinary **publishing lag**:
+    up and healthy, latest row 09-14, with a played 09-18 fixture carrying two
+    settled wagers. Primary alone: 120 checked, **3 unmatched**. With the
+    supplement: **123 checked, 123 agreed, 0 unmatched**. **Validated** — and
+    on a path that recurs weekly rather than only during an outage.
 - **The outage destroyed no irreplaceable record**, and in the end no
   bookmaker-average closing line was lost at all: no EPL fixture was played
   inside it, and `epl_games.csv` came back from the recovered source
@@ -196,16 +258,20 @@ honest, dated log of what was tried and what happened.
   and not the other), and both committed ESPN tables came out **byte-identical**
   to the range-fetched version. The cross-check source degraded loudly and
   nothing already correct became wrong — which is what it was designed to do.
-- **The CLV mean is 0.54 of a tick, and that is how it should be read.** One
-  1c Kalshi tick is worth **3.5253%** `clv_pct` at the prices this ledger pays
-  (mean price paid 0.3462), so the **-1.888%** real-close figure (n=17) is
-  half the smallest change the venue can express; the **median is exactly
-  0.000%** and **46.2% of settled rows closed at the price they were struck
-  at**. `ledger-summary` prints a `clv_resolution` block beside the mean.
+- **The CLV mean is a fraction of a tick, and that is how it should be read.**
+  One 1c Kalshi tick is worth **3.3915%** `clv_pct` at the prices this ledger
+  pays — *(run 19 corrected this from 3.5253%; the old figure used the wrong
+  formula, see Status)* — so the current **-0.281%** real-close figure (n=19)
+  is **0.083 of a tick**, far below the smallest change the venue can express;
+  the **median is exactly 0.000%** and **42.9% of settled rows closed at the
+  price they were struck at**. `ledger-summary` prints a `clv_resolution` block
+  beside the mean, and a `clv_precision_real_close` block beside that.
   **This does not mean CLV is unmeasurable here** — run 13's first draft said
-  so and the arithmetic refused it: SE is **1.222%**, about a third of a tick, and
-  ~30 real-close rows would resolve a quarter tick. The instrument works and
-  reads **no detectable edge**.
+  so and the arithmetic refused it. But the convergence estimate has moved
+  twice and is not a schedule: SE is now **0.546 ticks** and **~90** real-close
+  rows would resolve a quarter tick, against the ~30 runs 17–18 projected from
+  a smaller, quieter cohort. The instrument works and reads **no detectable
+  edge**.
   - **And it has now been asked, for the first time, whether CLV predicts
     anything here. It does not — at this n.** Splitting the 17 real-close rows
     by CLV sign: CLV<0 wins 2 of 6 (ROI -22.87%), CLV=0 wins 1 of 8 (-34.21%),
@@ -836,19 +902,30 @@ corrupts the record.
   signs, both straddling zero. The median split that motivated the question
   turns out to be 79-160% identity (see Status). **What remains open is the
   same regression on realized bets**, which needs a settled book much larger
-  than 26 — 09-21 adds 11 rows at once, and that is still nowhere near enough.
-- **CLV is at 17 real-close rows and needs ~13 more to resolve a quarter
-  tick.** The 11 open pre-registered wagers all settle 09-20/09-21 with full
-  final-hour capture coverage, so the run after 09-21 should be the first able
-  to put a real interval on CLV — and the first able to ask whether CLV
-  predicts outcomes on more than 6/8/3 rows (see Status).
+  than 28 — 09-21 adds 11 rows at once, and that is still nowhere near enough.
+- ~~**CLV is at 17 real-close rows and needs ~13 more to resolve a quarter
+  tick.**~~ — **run 19 measured that projection and it was optimistic by a
+  factor of three.** Two rows raised the SD 39%, so the requirement is **~90
+  rows, not ~30**; the cohort is at **19**. The projection is unstable by
+  construction because CLV variance scales with **placement lag**, which this
+  project does not control (see Status). It is now reported as a running
+  estimate, `n_for_target_se`, beside the mean.
+  - The 11 open pre-registered wagers settle 09-20/09-21 with full final-hour
+    coverage **and were struck at T-48h to T-56h**, so they should *lower* the
+    SD. That is next run's falsifiable prediction.
+  - **Read CLV in ticks.** One tick is **3.3915%** at this ledger's prices. The
+    mean is **-0.105 ticks**, CI **[-1.175, +0.964]** — no detectable edge, on
+    an interval of ±1.07 ticks.
+  - **Do not propose betting later to tighten the estimate.** Placement lag is
+    not a variance knob: it shrinks the noise and the estimand together.
 - ~~**football-data.co.uk is down; the deadline is 09-19.**~~ — **the source
   recovered on 09-18**, and run 16's ESPN failover was built in time either
-  way. **The failover is therefore still untested against a real gap**: no EPL
-  fixture fell inside the outage, so the supplement never fired, and the 09-19
-  exercise that would have tested it is gone. Treat it as **deferred, not
-  validated** — if the source dies again, expect the first real run of
-  `_supplement_from_espn` to be exactly that, a first run.
+  way. ~~The failover is therefore still untested against a real gap.~~ —
+  **run 19 tested it, and the gap was not an outage at all.** The primary is up
+  and simply publishes on a lag: latest row 09-14, a played 09-18 fixture
+  carrying two settled wagers. Primary alone leaves **3 settlements
+  unmatched**; with the supplement, **123/123 agree**. **Validated**, and on a
+  path that recurs every week rather than only when the host dies.
 - ~~**A non-GitHub mirror of the football-data CSVs has not been looked for.**~~
   — **moot for now**; the source is back. The constraint run 16 recorded (that
   session's GitHub access was scoped to this repository alone) still holds and

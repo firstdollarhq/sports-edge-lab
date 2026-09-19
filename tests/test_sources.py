@@ -305,6 +305,17 @@ def test_espn_results_reproduce_the_primary_ratings_exactly(monkeypatch):
     stale = real_epl[real_epl["game_date"].astype(str) < "2026-09-11"]
     assert len(stale) < len(real_epl), "fixture window no longer truncates anything"
 
+    # Compare only where BOTH sources have published. As of run 19 ESPN is a
+    # fixture ahead of football-data.co.uk -- it carries Brentford 3-0 Chelsea
+    # (2026-09-18) and the primary still stops at 09-14 -- so an unrestricted
+    # supplement builds its ratings from a game the primary has never seen and
+    # the two books cannot be equal by construction. That lead is a real and
+    # useful property of the supplement, asserted on its own below and pinned
+    # against the ledger in test_verify_coverage.py; it is not what this test
+    # is about, which is whether the two sources AGREE where they overlap.
+    published_through = real_epl["game_date"].astype(str).max()
+    real_espn = real_espn[real_espn["game_date"].astype(str) <= published_through]
+
     tables = {"epl_games": stale, "espn_epl_games": real_espn}
     monkeypatch.setattr(sources.snapshots, "read_processed", lambda n: tables[n])
 
@@ -322,3 +333,25 @@ def test_espn_results_reproduce_the_primary_ratings_exactly(monkeypatch):
     truth = live.build_soccer_model(real_epl)[0].book.ratings
     assert set(supplemented) == set(truth)          # no phantom club
     assert max(abs(supplemented[t] - truth[t]) for t in truth) == 0.0
+
+
+def test_the_espn_supplement_runs_ahead_of_the_primary_source():
+    """The supplement's whole value is that it is EARLIER, not just equal.
+
+    Run 16 verified ESPN agrees with football-data.co.uk; run 18 recorded that
+    it had still never been tested against a real gap. This is that gap: ESPN
+    published Brentford 3-0 Chelsea (2026-09-18) while the primary's latest
+    row is 2026-09-14, and two settled wagers sit on that fixture.
+
+    Asserted as `>=` rather than a fixed date so a backfill by the primary
+    makes this go quiet instead of red -- the property being pinned is that
+    the supplement is never BEHIND, which is what makes it worth consulting.
+    """
+    from sportsedge.storage import snapshots as real_snapshots
+
+    primary = real_snapshots.read_processed("epl_games")
+    espn = real_snapshots.read_processed("espn_epl_games")
+    espn_played = espn.dropna(subset=["home_score", "away_score"])
+
+    assert (espn_played["game_date"].astype(str).max()
+            >= primary["game_date"].astype(str).max())

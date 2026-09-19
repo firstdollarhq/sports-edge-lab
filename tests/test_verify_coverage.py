@@ -108,3 +108,47 @@ def test_empty_stats_table_covers_nothing():
     """No coverage windows means nothing can be called 'covered' by accident."""
     assert settle._coverage_windows(pd.DataFrame()) == []
     assert not settle._in_coverage([], "26SEP13")
+
+
+# --- the ESPN supplement, against a real gap (run 19) -----------------------
+
+def test_espn_supplement_covers_settlements_the_primary_has_not_published():
+    """Run 16 built the supplement; run 19 is the first run it mattered.
+
+    Brentford 3-0 Chelsea kicked off 2026-09-18T19:00Z and carried two open
+    wagers. Kalshi settled them and ESPN had the score the next morning;
+    football-data.co.uk had not published the fixture and still stops at
+    2026-09-14. Without the supplement those two settlements are simply
+    absent from the cross-check -- and they are the newest rows in the
+    ledger, which is exactly the cohort most in need of checking.
+
+    Asserted on the committed tables rather than a fixture, because the claim
+    being pinned is about the two sources' real relative lag. If
+    football-data.co.uk later backfills 09-18, the first assertion goes
+    slack and the test still holds the ones that matter.
+    """
+    import pandas as pd
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    primary = pd.read_csv(root / "data" / "processed" / "epl_games.csv")
+    supplement = pd.read_csv(root / "data" / "processed" / "espn_epl_games.csv")
+    ledger = pd.read_csv(root / "bets" / "ledger.csv")
+
+    played = supplement.dropna(subset=["home_score", "away_score"])
+    game = played[(played["home_team"] == "Brentford")
+                  & (played["away_team"] == "Chelsea")]
+    assert len(game) == 1, "ESPN must carry the 09-18 fixture"
+
+    have = {(str(r["game_date"])[:10], r["home_team"], r["away_team"])
+            for _, r in primary.dropna(subset=["home_score"]).iterrows()}
+    key = ("2026-09-18", "Brentford", "Chelsea")
+
+    settled = ledger[ledger["status"].isin(["won", "lost"])]
+    on_game = settled[settled["game_id"].astype(str).str.contains("26SEP18BRECFC")]
+    assert len(on_game) == 2, "both wagers on that fixture must be settled"
+
+    # The whole point: these two are verifiable only via the supplement.
+    if key not in have:
+        assert key in {(str(r["game_date"])[:10], r["home_team"], r["away_team"])
+                       for _, r in played.iterrows()}

@@ -4,6 +4,7 @@ offered, and what happened -- kept separate from the SQLite DB so it's easy
 to open, diff in git, and eyeball for bias."""
 from __future__ import annotations
 
+import math
 import uuid
 from collections.abc import Sequence
 from datetime import datetime, timezone
@@ -400,6 +401,12 @@ def _clv_by_reference_quality(settled: pd.DataFrame) -> dict:
         "clv_unknown_reference_n": int(lag.isna().sum()),
         "clv_reference_max_lag_h": CLV_REFERENCE_MAX_LAG_H,
         "clv_resolution": _clv_resolution(rows),
+        # Precision of the number that is actually quoted as the headline.
+        # `clv_resolution` above covers every row with a CLV, real close or
+        # not; this covers the real-close cohort alone, which is the only one
+        # a claim about the model can rest on.
+        "clv_precision_real_close": _clv_precision(
+            rows[lag.notna() & (lag <= CLV_REFERENCE_MAX_LAG_H)]),
     }
 
 
@@ -439,10 +446,7 @@ def _clv_resolution(rows: pd.DataFrame) -> dict:
         return {"n": 0}
 
     p = 1.0 / placed[ok]                      # implied probability paid
-    # Value of one tick, in clv_pct units, at each row's own price. Guarded
-    # because a contract priced at or below one tick has no cheaper neighbour.
-    room = (p - KALSHI_TICK).where(p > KALSHI_TICK)
-    tick_pct = ((p / room - 1) * 100).dropna()
+    tick_pct = _one_tick_as_clv_pct(placed[ok])
     if tick_pct.empty:
         return {"n": int(ok.sum())}
 
@@ -456,6 +460,99 @@ def _clv_resolution(rows: pd.DataFrame) -> dict:
         "mean_abs_ticks": float((clv[ok].abs() / tick_pct).mean()),
         "share_unmoved": (None if moved is None else float(1 - moved.mean())),
     }
+
+
+def _one_tick_as_clv_pct(placed_decimal: pd.Series) -> pd.Series:
+    """What one tick of closing-price movement is worth, in `clv_pct` units.
+
+    EXACT, and it is just the decimal odds paid. Until run 19 this was
+    `p / (p - tick) - 1`, the cost of buying one cent lower, which is a
+    different quantity and runs 1.9%-9.1% high on this ledger's prices (+4.3%
+    on the mean). That biased `mean_abs_ticks` DOWN -- a genuine one-tick move
+    read as 0.98 ticks -- which is the wrong direction for a field whose whole
+    job is to stop a sub-tick mean being read as a signal.
+
+    The derivation, since the old formula looked equally plausible:
+
+        clv_pct = (placed_dec / close_dec - 1) * 100
+        ticks   = (1/close_dec - 1/placed_dec) / TICK
+
+    so  clv_pct / placed_dec == (placed_dec - close_dec) * 100 / (close_dec *
+    placed_dec) == ticks, with TICK = 0.01. The conversion is linear in the
+    closing price and identical in both directions, so one tick is worth
+    `placed_dec` percent at that row's price and nothing else.
+
+    The check that this is right rather than merely tidier: the venue quotes
+    whole cents, so under the exact conversion every settled CLV in
+    `bets/ledger.csv` is an INTEGER number of ticks (max deviation 8.4e-15).
+    Under the old one none of them were.
+    """
+    dec = pd.to_numeric(placed_decimal, errors="coerce").dropna()
+    return dec[dec > 0]
+
+
+# How fine a reading the project wants out of CLV before treating it as
+# evidence about the model. A quarter of one cent; anything coarser cannot
+# distinguish "no edge" from "an edge worth a tick a bet".
+CLV_TARGET_SE_TICKS = 0.25
+
+
+def _clv_precision(rows: pd.DataFrame) -> dict:
+    """How precisely this cohort's mean CLV is actually known, in ticks.
+
+    WHY THIS EXISTS. Run 18 projected that ~30 real-close rows would resolve a
+    quarter tick, from the standard deviation observed at n=17. Run 19 added
+    two rows and the SD rose 39% (5.04 -> 6.99 in clv_pct), because those two
+    were the first in the cohort placed more than four days before kickoff and
+    they moved 6 and 2 ticks. The required n went from ~30 to ~90.
+
+    A projection built on one cohort's SD is worth only as much as the SD is
+    stable, and this one is not, because the cohort's variance is a function
+    of WHEN the bets were placed -- which this project does not control. The
+    recommender logs a side the first time it sees an edge, so placement lag
+    is set by when a contract opens, not by any decision. Reporting
+    `n_for_target_se` next to the mean is what stops the next run inheriting a
+    number that has already moved.
+
+    And the trap it guards: placement lag cannot be shortened to buy
+    precision. CLV measures how far the line came to you after you struck it,
+    so a bet placed at T-1h has little variance AND little to measure. Both
+    the noise and the estimand shrink together.
+    """
+    if rows.empty or "clv_pct" not in rows.columns:
+        return {"n": 0}
+    dec = pd.to_numeric(rows.get("market_odds_decimal"), errors="coerce")
+    clv = pd.to_numeric(rows["clv_pct"], errors="coerce")
+    ok = dec.notna() & (dec > 0) & clv.notna()
+    if not ok.any():
+        return {"n": 0}
+
+    ticks = clv[ok] / dec[ok]
+    n = int(len(ticks))
+    out = {
+        "n": n,
+        "mean_ticks": float(ticks.mean()),
+        "median_ticks": float(ticks.median()),
+        "target_se_ticks": CLV_TARGET_SE_TICKS,
+    }
+    if n < 2:
+        return {**out, "sd_ticks": None, "se_ticks": None,
+                "ci95_ticks": None, "n_for_target_se": None}
+
+    sd = float(ticks.std(ddof=1))
+    se = sd / math.sqrt(n)
+    out.update({
+        "sd_ticks": sd,
+        "se_ticks": se,
+        "ci95_ticks": [float(ticks.mean() - 1.96 * se),
+                       float(ticks.mean() + 1.96 * se)],
+        # Rows needed for SE == target, IF the SD stays where it is. It has
+        # not so far, which is the point -- this is a running estimate, not a
+        # schedule.
+        "n_for_target_se": (None if sd == 0
+                            else int(round((sd / CLV_TARGET_SE_TICKS) ** 2))),
+    })
+    return out
 
 
 def summarize() -> dict:
