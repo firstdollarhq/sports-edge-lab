@@ -5,15 +5,44 @@ A research project testing predictive sports models against real market odds.
 to find a real, validated edge, not to confirm a bias. See `journal/` for an
 honest, dated log of what was tried and what happened.
 
-## Status (2026-09-19, scheduled run #20)
+## Status (2026-09-20, scheduled run #21)
 
-- **0 live bets. 29 settled shadow bets (8 wins), 35 pending, 67 void.**
-  Headline win rate **27.59%**, ROI **-8.23%**. Aston Villa won at Tottenham —
-  the `away` side, claimed 0.483 against a de-vigged market 0.266, paid 3.7037,
-  **closed at 4.1667 for -3 ticks of CLV**. **The ROI improved ten points on
-  one wager**, which is the noise this project exists to not be fooled by; it
-  is reported as arithmetic, not as progress. It is 29 settled wagers and
-  settles nothing on its own.
+- **0 live bets. 33 settled shadow bets (10 wins), 32 pending, 67 void.**
+  Headline win rate **30.30%**, ROI **+3.98%** — **positive for the first time
+  in the project's history, and it is not a result.** Four EPL wagers settled;
+  one of them, `Coventry @ Nott'm Forest` away, paid **5.8824**. Strip that
+  single row and the ledger reads **-5.23%**. A statistic that swings eleven
+  points on one wager at n=33 is arithmetic, and this project does not read it.
+  **The deployment gate is untouched: it keys on out-of-sample backtest against
+  the de-vigged closing line, not on the shadow ledger's ROI, and EPL still
+  fails it at -5.12%.**
+- **Runs 19 and 20 built a falsifiable prediction on a placement lag that is
+  wrong by a factor of four, and the correct number inverts the prediction.**
+  Both entries state that the 11 open pre-registered wagers were "placed at
+  T-48h to T-56h" and would therefore *lower* the CLV standard deviation when
+  they settle. The ledger says they were struck at **T-217.7h to T-225.0h** —
+  the longest lags it holds, and **beyond the entire support of the settled
+  cohort** (48.1h to 142.6h). T-48h to T-56h is the *settled* cohort's range
+  (min **48.1h**, median **53.1h**); it was read off one cohort and attached to
+  the other.
+  - **Under the very mechanism runs 19 and 20 invoked, the prediction runs
+    backwards.** CLV magnitude scales with placement lag, so the longest-lag
+    rows in the book should **raise** the SD, not lower it.
+  - **Nothing in the codebase computed that number** — it was carried from one
+    journal entry to the next by hand. `ledger-summary` now reports
+    `placement_lag_pending` and `placement_lag_real_close`, so a claim about
+    rows that have not settled yet is checkable against the rows themselves
+    **before** the games are played. It reports; it gates nothing.
+- **The lag–variance relationship weakened materially this run, on the rows
+  that should have confirmed it.** `corr(lag, |ticks|)` fell from **0.628
+  (n=20)** to **0.4223 (n=24)**, and the cluster bootstrap over 21 games
+  widened back to **[0.054, 0.722]** from run 20's [0.207, 0.818]. The two
+  longest-lag rows in the ledger (T-142.6h) moved only **2 and 1 ticks**, and a
+  T-103.9h row **did not move at all**. Run 20 wrote that the relationship was
+  "no longer hanging on a hair"; four rows put it back on one. **Suggestive,
+  and now barely that.**
+  - The SD *fell* — 2.403 → **2.2518 ticks** — and `n_for_target_se` went
+    **92 → 81**. Both are still running estimates, and both moved on 4 rows.
 - **Elo enters a newly-promoted team at 1500, and the bet rule buys the
   difference.** Over the 8 teams making their first EPL appearance in the table
   (2020-21..2025-26), the model's probability for the debutant side runs
@@ -33,6 +62,16 @@ honest, dated log of what was tried and what happened.
     of history each; Hull sits **14th in the Elo book at 1534**, above Fulham,
     Crystal Palace and Tottenham. The largest claimed edge on the entire EPL
     board is `Hull @ Newcastle` away at **+57.7%**.
+  - **All three resolved on 09-19/20, and they made money.** Hull away **lost**
+    (-1.000), Hull draw **lost** (-1.000), `Coventry @ Nott'm Forest` away
+    **won** at 5.8824 (**+4.882**) — **net +2.882 units on three wagers**. The
+    rejected correction would have declined all three, so applying it would
+    have turned the ledger's **+3.98%** into **-5.23%**. **This does not
+    reopen the promotion prior.** The rejection rests on six seasons
+    out-of-sample with a season-cluster CI, and three wagers cannot overturn
+    it; this is precisely the noise that rejection anticipated, recorded here
+    so that a later run does not rediscover the prior on the back of one
+    5.88 winner. **Run 20's bias measurement stands, and so does its verdict.**
   - **A second-order effect makes 1500 wrong in a way that is easy to miss.**
     `backtest_soccer` never regresses to the mean and relegated teams carry
     their low ratings out of the division, so the surviving book drifts up: the
@@ -191,6 +230,14 @@ honest, dated log of what was tried and what happened.
   claimed / 3.96 market-implied); it is deliberately **not** being scored
   before then, because it has already been looked at three times with no
   correction for looking.
+  - **Run 21 is the vindication of that discipline, measured rather than
+    argued.** `scorecard`'s `p_at_most_model` has now moved **0.0385 (run 17)
+    → 0.1581 (run 21)** on four settled wagers, while the pre-registered
+    25-of-36 reading sat still at **0.0509** the whole time. A run that had
+    stopped and called 0.0385 a rejection would be un-rejecting it today.
+    **The scorecard's p-value is a running statistic on a growing sample with
+    no correction for looking; it is not, and never was, the pre-registered
+    result.** Eighth opportunity to look early, eighth refusal.
 - **football-data.co.uk is BACK** after 34-48h down (the recovery falls in an
   unobserved 14h gap). The `www`→apex redirect remains; the
   apex→`http://127.0.0.1/` loop is gone. **The committed table it was replaced
@@ -975,9 +1022,37 @@ corrupts the record.
   construction because CLV variance scales with **placement lag**, which this
   project does not control (see Status). It is now reported as a running
   estimate, `n_for_target_se`, beside the mean.
-  - The 11 open pre-registered wagers settle 09-20/09-21 with full final-hour
+  - ~~The 11 open pre-registered wagers settle 09-20/09-21 with full final-hour
     coverage **and were struck at T-48h to T-56h**, so they should *lower* the
-    SD. That is next run's falsifiable prediction.
+    SD.~~ — **withdrawn by run 21: the lag is wrong and the prediction was
+    backwards.** Those 11 rows were struck at **T-217.7h to T-225.0h**, not
+    T-48h to T-56h; the misquoted range belongs to the *settled* cohort. Under
+    the lag–variance mechanism the prediction cited, the longest-lag rows in
+    the book should **raise** the SD. See the replacement below.
+  - **Run 21's replacement pre-registration, written 2026-09-20 at ~06:30Z,
+    before the 17:00Z kickoffs.** The 11 rows settle 09-20/09-21. The current
+    real-close cohort is **n=24, sd 2.2518 ticks**, and the arithmetic that
+    combines them is monotone in one quantity — the RMS |ticks| of the arriving
+    rows — with a **crossover at RMS ≈ 2.3**:
+
+    | RMS \|ticks\| of the 11 | combined sd | `n_for_target_se` | SD verdict |
+    |---|---|---|---|
+    | 1.00 | 1.935 | 60 | falls |
+    | 1.27 (cohort's current mean abs) | 1.984 | 63 | falls |
+    | 2.00 | 2.161 | 75 | falls |
+    | **2.33** | **2.260** | **82** | **crossover** |
+    | 3.00 | 2.488 | 100 | rises |
+    | 4.54 (linear extrapolation to T-220h) | 3.113 | 156 | rises |
+
+    **Predicted: the 11 rows come in with RMS |ticks| above 2.3 and the
+    real-close SD rises above 2.2518.** This is a genuine extrapolation — 220h
+    is **1.5×** beyond the cohort's longest settled lag, and the bucket means
+    are already non-monotone at the top (48–60h **0.87**, 60–100h **2.67**,
+    100–143h **2.33**), so the linear fit's 4.54 is the optimistic end of the
+    claim, not its centre. **If RMS comes in below 2.3, the lag–variance
+    relationship has failed out-of-sample at long lag** and the explanation
+    behind `n_for_target_se`'s instability needs rewriting rather than
+    patching. Score it next run, against this table.
   - **Read CLV in ticks.** One tick is **3.3915%** at this ledger's prices. The
     mean is **-0.105 ticks**, CI **[-1.175, +0.964]** — no detectable edge, on
     an interval of ±1.07 ticks.

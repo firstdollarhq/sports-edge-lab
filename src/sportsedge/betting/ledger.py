@@ -344,6 +344,10 @@ def _summarize_frame(df: pd.DataFrame) -> dict:
             pd.concat([settled, active])["edge_pct"].mean()
             if not df.empty and (len(settled) + len(active)) else None
         ),
+        # The open book's lag, reported before those rows settle. A prediction
+        # about how pending wagers will move the CLV SD is checkable against
+        # this the moment it is written, rather than a run later.
+        "placement_lag_pending": _placement_lag(active),
     }
     if df.empty or settled.empty:
         return {**base, "win_rate": None, "roi_pct": None, "avg_clv_pct": None,
@@ -407,6 +411,52 @@ def _clv_by_reference_quality(settled: pd.DataFrame) -> dict:
         # a claim about the model can rest on.
         "clv_precision_real_close": _clv_precision(
             rows[lag.notna() & (lag <= CLV_REFERENCE_MAX_LAG_H)]),
+        # Beside the SD, because the SD is a function of it. See _placement_lag.
+        "placement_lag_real_close": _placement_lag(
+            rows[lag.notna() & (lag <= CLV_REFERENCE_MAX_LAG_H)]),
+    }
+
+
+def _placement_lag(rows: pd.DataFrame) -> dict:
+    """Hours between striking a wager and kickoff, for one cohort.
+
+    WHY THIS EXISTS. `_clv_precision` above explains that this cohort's
+    variance is a function of placement lag. Runs 19 and 20 then both stated,
+    in prose, that the 11 open pre-registered wagers had been "placed at T-48h
+    to T-56h", and built a falsifiable prediction on it -- that those rows
+    would LOWER the CLV standard deviation when they settled. The ledger says
+    they were struck at **T-217.7h to T-225.0h**, the longest lags it holds.
+    Under the very relationship being invoked, longer lag means larger moves,
+    so the arithmetic predicted the opposite of what was written down.
+
+    Nothing computed that number. It was carried from one journal entry to the
+    next by hand, and two runs' worth of reasoning rested on it. So it is
+    computed here, for the settled real-close cohort and for the open book
+    alike, and quoted beside the SD it drives. The open-book figure is the one
+    that matters: it is the only way a prediction about rows that have not
+    settled yet can be checked against the rows themselves before the games
+    are played.
+
+    This reports. It gates nothing and changes no price.
+    """
+    empty = {"n": 0, "min_h": None, "median_h": None, "max_h": None}
+    if rows.empty:
+        return empty
+    for col in ("kickoff_utc", "placed_at"):
+        if col not in rows.columns:
+            return empty
+    kick = pd.to_datetime(rows["kickoff_utc"], utc=True, errors="coerce",
+                          format="mixed")
+    placed = pd.to_datetime(rows["placed_at"], utc=True, errors="coerce",
+                            format="mixed")
+    lag = ((kick - placed).dt.total_seconds() / 3600.0).dropna()
+    if lag.empty:
+        return empty
+    return {
+        "n": int(len(lag)),
+        "min_h": float(lag.min()),
+        "median_h": float(lag.median()),
+        "max_h": float(lag.max()),
     }
 
 
