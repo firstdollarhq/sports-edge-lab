@@ -1,47 +1,80 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Score Tracker</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <style>
-  :root { --bg:#10141c; --card:#1a2030; --text:#f2f5fa; --muted:#8a94a8; --a:#3b82f6; --b:#ef4444; }
+  /* Layout: clock on top, two team panels (score, shots, saves), then step picker, tools and log. */
+  :root { color-scheme: dark; --bg:#10141c; --card:#1a2030; --text:#f2f5fa; --muted:#8a94a8; --a:#3b82f6; --b:#ef4444; --chip:#2a3247; --line:#222a3c; --ok:#22c55e; }
   * { box-sizing: border-box; }
-  body { margin:0; min-height:100vh; background:var(--bg); color:var(--text);
-         font-family: system-ui, sans-serif; display:flex; flex-direction:column; align-items:center; padding:16px; }
-  h1 { font-size:1.1rem; color:var(--muted); font-weight:600; letter-spacing:.08em; text-transform:uppercase; }
+  html, body { background: var(--bg); }
+  body { margin:0; min-height:100%; color:var(--text); font-family: system-ui, sans-serif;
+         display:flex; flex-direction:column; align-items:center;
+         padding-block:16px; padding-left:max(16px, env(safe-area-inset-left, 0px)); padding-right:max(16px, env(safe-area-inset-right, 0px)); }
+  h1 { font-size:1.1rem; color:var(--muted); font-weight:600; letter-spacing:.08em; text-transform:uppercase; margin:0 0 12px; }
+  button { font:inherit; border:0; border-radius:12px; cursor:pointer; color:#fff; font-weight:700; }
+  button:focus-visible, .name:focus-visible { outline:2px solid var(--text); outline-offset:2px; }
+  button:active { transform:scale(.96); }
+
+  .clock { width:100%; max-width:640px; background:var(--card); border-radius:16px; padding:12px; text-align:center; margin-bottom:16px; }
+  .time { font-size:4rem; font-weight:800; font-variant-numeric:tabular-nums; line-height:1.1; }
+  .time.done { color:var(--b); }
+  .clock .btns { margin-top:8px; }
+  .clock button { background:var(--chip); padding:12px 20px; }
+  .clock button.go { background:var(--ok); min-width:120px; }
+
   .board { display:grid; grid-template-columns:1fr 1fr; gap:16px; width:100%; max-width:640px; }
-  .team { background:var(--card); border-radius:16px; padding:20px 12px; text-align:center; border-top:6px solid var(--c); }
+  .team { min-width:0; background:var(--card); border-radius:16px; padding:20px 12px; text-align:center; border-top:6px solid var(--c); }
   .team.a { --c:var(--a); } .team.b { --c:var(--b); }
   .name { width:100%; background:transparent; border:0; color:var(--text); font-size:1.2rem; font-weight:700; text-align:center; }
   .score { font-size:5.5rem; font-weight:800; line-height:1.1; margin:8px 0 16px; font-variant-numeric:tabular-nums; }
   .btns { display:flex; gap:8px; justify-content:center; }
-  button { font:inherit; border:0; border-radius:12px; cursor:pointer; color:#fff; font-weight:700; }
   .add { background:var(--c); flex:1; padding:18px 0; font-size:1.3rem; }
-  .sub { background:#2a3247; padding:18px 18px; font-size:1.3rem; }
-  button:active { transform:scale(.96); }
-  .step { margin:16px 0; display:flex; gap:8px; align-items:center; color:var(--muted); }
-  .step button { background:#2a3247; padding:8px 14px; }
+  .sub { background:var(--chip); padding:18px; font-size:1.3rem; }
+
+  .stats { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:16px; }
+  .stat { background:var(--chip); border-radius:12px; padding:8px 4px; }
+  .stat .lbl { font-size:.7rem; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+  .stat .val { font-size:2rem; font-weight:800; font-variant-numeric:tabular-nums; }
+  .stat button { background:var(--c); width:100%; padding:10px 0; margin-top:4px; }
+
+  .step { margin:16px 0; display:flex; flex-wrap:wrap; gap:8px; align-items:center; color:var(--muted); }
+  .step button { background:var(--chip); padding:8px 14px; }
   .step button.on { background:#4b5563; outline:2px solid var(--text); }
   .tools { display:flex; gap:8px; }
-  .tools button { background:#2a3247; padding:10px 16px; }
+  .tools button { background:var(--chip); padding:10px 16px; }
+  .tools button.warn { background:var(--b); }
   .log { width:100%; max-width:640px; margin-top:16px; color:var(--muted); font-size:.9rem; }
-  .log div { padding:4px 0; border-bottom:1px solid #222a3c; }
+  .log div { padding:4px 0; border-bottom:1px solid var(--line); }
 </style>
 </head>
 <body>
 <h1>Score Tracker</h1>
 
+<div class="clock">
+  <div class="time" id="time">20:00</div>
+  <div class="btns"><button class="go" id="go">Start</button><button id="clockReset">Reset clock</button></div>
+</div>
+
 <div class="board">
   <div class="team a">
     <input class="name" id="nameA" value="Team A" aria-label="Team A name">
     <div class="score" id="scoreA">0</div>
-    <div class="btns"><button class="sub" data-t="a" data-d="-1">−</button><button class="add" data-t="a" data-d="1" id="addA">+1</button></div>
+    <div class="btns"><button class="sub" data-t="a" data-k="score" data-d="-1" aria-label="Subtract from Team A">−</button><button class="add" data-t="a" data-k="score" data-d="1" id="addA">+1</button></div>
+    <div class="stats">
+      <div class="stat"><div class="lbl">Shots on goal</div><div class="val" id="sogA">0</div><button data-t="a" data-k="sog" data-d="1">+ Shot</button></div>
+      <div class="stat"><div class="lbl">Saves</div><div class="val" id="saveA">0</div><button data-t="a" data-k="save" data-d="1">+ Save</button></div>
+    </div>
   </div>
   <div class="team b">
     <input class="name" id="nameB" value="Team B" aria-label="Team B name">
     <div class="score" id="scoreB">0</div>
-    <div class="btns"><button class="sub" data-t="b" data-d="-1">−</button><button class="add" data-t="b" data-d="1" id="addB">+1</button></div>
+    <div class="btns"><button class="sub" data-t="b" data-k="score" data-d="-1" aria-label="Subtract from Team B">−</button><button class="add" data-t="b" data-k="score" data-d="1" id="addB">+1</button></div>
+    <div class="stats">
+      <div class="stat"><div class="lbl">Shots on goal</div><div class="val" id="sogB">0</div><button data-t="b" data-k="sog" data-d="1">+ Shot</button></div>
+      <div class="stat"><div class="lbl">Saves</div><div class="val" id="saveB">0</div><button data-t="b" data-k="save" data-d="1">+ Save</button></div>
+    </div>
   </div>
 </div>
 
@@ -54,26 +87,67 @@
 <div class="log" id="log"></div>
 
 <script>
-let s = { a:0, b:0, nameA:"Team A", nameB:"Team B", step:1, history:[] };
-try { Object.assign(s, JSON.parse(localStorage.getItem("scoreTracker") || "{}")); } catch(e) {}
+const PERIOD = 20 * 60 * 1000;
+let s = { a:{score:0,sog:0,save:0}, b:{score:0,sog:0,save:0}, nameA:"Team A", nameB:"Team B", step:1, history:[], remaining:PERIOD, endAt:null };
+try {
+  const saved = JSON.parse(localStorage.getItem("scoreTracker2") || "null");
+  if (saved && saved.a && saved.b) Object.assign(s, saved);
+} catch(e) {}
 
 const $ = id => document.getElementById(id);
-function save() { try { localStorage.setItem("scoreTracker", JSON.stringify(s)); } catch(e) {} }
+const LABEL = { score:"", sog:"shot", save:"save" };
+function save() { try { localStorage.setItem("scoreTracker2", JSON.stringify(s)); } catch(e) {} }
+const esc = t => String(t).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function left() { return s.endAt ? Math.max(0, s.endAt - Date.now()) : s.remaining; }
+function fmt(ms) {
+  const t = Math.ceil(ms / 1000), m = Math.floor(t / 60), sec = t % 60;
+  return m + ":" + String(sec).padStart(2, "0");
+}
+function tick() {
+  const ms = left();
+  if (s.endAt && ms === 0) { s.remaining = 0; s.endAt = null; save(); renderClock(); return; }
+  $("time").textContent = fmt(ms);
+}
+function renderClock() {
+  const ms = left();
+  $("time").textContent = fmt(ms);
+  $("time").classList.toggle("done", ms === 0);
+  $("go").textContent = s.endAt ? "Pause" : (ms === 0 ? "Time" : (ms < PERIOD ? "Resume" : "Start"));
+  $("go").disabled = ms === 0;
+}
+$("go").onclick = () => {
+  if (s.endAt) { s.remaining = left(); s.endAt = null; }
+  else if (s.remaining > 0) { s.endAt = Date.now() + s.remaining; }
+  save(); renderClock();
+};
+$("clockReset").onclick = () => { s.endAt = null; s.remaining = PERIOD; save(); renderClock(); };
+setInterval(tick, 250);
+document.addEventListener("visibilitychange", () => { tick(); renderClock(); });
 
 function render() {
-  $("scoreA").textContent = s.a; $("scoreB").textContent = s.b;
-  $("nameA").value = s.nameA; $("nameB").value = s.nameB;
-  $("addA").textContent = "+" + s.step; $("addB").textContent = "+" + s.step;
+  for (const t of ["a", "b"]) {
+    const T = t.toUpperCase();
+    $("score" + T).textContent = s[t].score;
+    $("sog" + T).textContent = s[t].sog;
+    $("save" + T).textContent = s[t].save;
+    $("name" + T).value = s["name" + T];
+    $("add" + T).textContent = "+" + s.step;
+  }
   document.querySelectorAll("[data-step]").forEach(b => b.classList.toggle("on", +b.dataset.step === s.step));
-  $("log").innerHTML = s.history.slice(-8).reverse().map(h => `<div>${h.name} ${h.d > 0 ? "+" : ""}${h.d} → ${h.a}–${h.b}</div>`).join("");
+  $("log").innerHTML = s.history.slice(-8).reverse().map(h => {
+    const what = h.k === "score" ? (h.d > 0 ? "+" : "") + h.d : "+1 " + LABEL[h.k];
+    return `<div>${esc(h.name)} ${what} · ${h.at} → ${h.sa}–${h.sb}</div>`;
+  }).join("");
   save();
 }
 
 document.querySelectorAll("[data-t]").forEach(btn => btn.onclick = () => {
-  const t = btn.dataset.t, d = +btn.dataset.d * s.step;
-  if (s[t] + d < 0) return;
-  s[t] += d;
-  s.history.push({ t, d, a:s.a, b:s.b, name: t === "a" ? s.nameA : s.nameB });
+  const t = btn.dataset.t, k = btn.dataset.k;
+  const d = k === "score" ? +btn.dataset.d * s.step : 1;
+  if (s[t][k] + d < 0) return;
+  s[t][k] += d;
+  s.history.push({ t, k, d, at: fmt(left()), sa: s.a.score, sb: s.b.score, name: t === "a" ? s.nameA : s.nameB });
   render();
 });
 document.querySelectorAll("[data-step]").forEach(b => b.onclick = () => { s.step = +b.dataset.step; render(); });
@@ -81,11 +155,24 @@ $("nameA").oninput = e => { s.nameA = e.target.value; save(); };
 $("nameB").oninput = e => { s.nameB = e.target.value; save(); };
 $("undo").onclick = () => {
   const h = s.history.pop(); if (!h) return;
-  s[h.t] -= h.d; render();
+  s[h.t][h.k] -= h.d; render();
 };
-$("reset").onclick = () => { if (confirm("Start a new game?")) { s.a = s.b = 0; s.history = []; render(); } };
+// Two-tap confirm: confirm() dialogs are blocked in artifacts.
+let armed = null;
+$("reset").onclick = () => {
+  const b = $("reset");
+  if (!armed) {
+    b.textContent = "Tap again to reset"; b.classList.add("warn");
+    armed = setTimeout(disarm, 3000); return;
+  }
+  disarm();
+  s.a = {score:0,sog:0,save:0}; s.b = {score:0,sog:0,save:0};
+  s.history = []; s.endAt = null; s.remaining = PERIOD;
+  render(); renderClock();
+};
+function disarm() { clearTimeout(armed); armed = null; $("reset").textContent = "New game"; $("reset").classList.remove("warn"); }
 
-render();
+render(); renderClock();
 </script>
 </body>
 </html>
