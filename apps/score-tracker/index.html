@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Score Tracker</title>
+<style>
+  :root { --bg:#10141c; --card:#1a2030; --text:#f2f5fa; --muted:#8a94a8; --a:#3b82f6; --b:#ef4444; }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; background:var(--bg); color:var(--text);
+         font-family: system-ui, sans-serif; display:flex; flex-direction:column; align-items:center; padding:16px; }
+  h1 { font-size:1.1rem; color:var(--muted); font-weight:600; letter-spacing:.08em; text-transform:uppercase; }
+  .board { display:grid; grid-template-columns:1fr 1fr; gap:16px; width:100%; max-width:640px; }
+  .team { background:var(--card); border-radius:16px; padding:20px 12px; text-align:center; border-top:6px solid var(--c); }
+  .team.a { --c:var(--a); } .team.b { --c:var(--b); }
+  .name { width:100%; background:transparent; border:0; color:var(--text); font-size:1.2rem; font-weight:700; text-align:center; }
+  .score { font-size:5.5rem; font-weight:800; line-height:1.1; margin:8px 0 16px; font-variant-numeric:tabular-nums; }
+  .btns { display:flex; gap:8px; justify-content:center; }
+  button { font:inherit; border:0; border-radius:12px; cursor:pointer; color:#fff; font-weight:700; }
+  .add { background:var(--c); flex:1; padding:18px 0; font-size:1.3rem; }
+  .sub { background:#2a3247; padding:18px 18px; font-size:1.3rem; }
+  button:active { transform:scale(.96); }
+  .step { margin:16px 0; display:flex; gap:8px; align-items:center; color:var(--muted); }
+  .step button { background:#2a3247; padding:8px 14px; }
+  .step button.on { background:#4b5563; outline:2px solid var(--text); }
+  .tools { display:flex; gap:8px; }
+  .tools button { background:#2a3247; padding:10px 16px; }
+  .log { width:100%; max-width:640px; margin-top:16px; color:var(--muted); font-size:.9rem; }
+  .log div { padding:4px 0; border-bottom:1px solid #222a3c; }
+</style>
+</head>
+<body>
+<h1>Score Tracker</h1>
+
+<div class="board">
+  <div class="team a">
+    <input class="name" id="nameA" value="Team A" aria-label="Team A name">
+    <div class="score" id="scoreA">0</div>
+    <div class="btns"><button class="sub" data-t="a" data-d="-1">−</button><button class="add" data-t="a" data-d="1" id="addA">+1</button></div>
+  </div>
+  <div class="team b">
+    <input class="name" id="nameB" value="Team B" aria-label="Team B name">
+    <div class="score" id="scoreB">0</div>
+    <div class="btns"><button class="sub" data-t="b" data-d="-1">−</button><button class="add" data-t="b" data-d="1" id="addB">+1</button></div>
+  </div>
+</div>
+
+<div class="step">Points per tap:
+  <button data-step="1" class="on">1</button><button data-step="2">2</button>
+  <button data-step="3">3</button><button data-step="6">6</button>
+</div>
+
+<div class="tools"><button id="undo">Undo</button><button id="reset">New game</button></div>
+<div class="log" id="log"></div>
+
+<script>
+let s = { a:0, b:0, nameA:"Team A", nameB:"Team B", step:1, history:[] };
+try { Object.assign(s, JSON.parse(localStorage.getItem("scoreTracker") || "{}")); } catch(e) {}
+
+const $ = id => document.getElementById(id);
+function save() { try { localStorage.setItem("scoreTracker", JSON.stringify(s)); } catch(e) {} }
+
+function render() {
+  $("scoreA").textContent = s.a; $("scoreB").textContent = s.b;
+  $("nameA").value = s.nameA; $("nameB").value = s.nameB;
+  $("addA").textContent = "+" + s.step; $("addB").textContent = "+" + s.step;
+  document.querySelectorAll("[data-step]").forEach(b => b.classList.toggle("on", +b.dataset.step === s.step));
+  $("log").innerHTML = s.history.slice(-8).reverse().map(h => `<div>${h.name} ${h.d > 0 ? "+" : ""}${h.d} → ${h.a}–${h.b}</div>`).join("");
+  save();
+}
+
+document.querySelectorAll("[data-t]").forEach(btn => btn.onclick = () => {
+  const t = btn.dataset.t, d = +btn.dataset.d * s.step;
+  if (s[t] + d < 0) return;
+  s[t] += d;
+  s.history.push({ t, d, a:s.a, b:s.b, name: t === "a" ? s.nameA : s.nameB });
+  render();
+});
+document.querySelectorAll("[data-step]").forEach(b => b.onclick = () => { s.step = +b.dataset.step; render(); });
+$("nameA").oninput = e => { s.nameA = e.target.value; save(); };
+$("nameB").oninput = e => { s.nameB = e.target.value; save(); };
+$("undo").onclick = () => {
+  const h = s.history.pop(); if (!h) return;
+  s[h.t] -= h.d; render();
+};
+$("reset").onclick = () => { if (confirm("Start a new game?")) { s.a = s.b = 0; s.history = []; render(); } };
+
+render();
+</script>
+</body>
+</html>
